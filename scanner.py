@@ -1,145 +1,160 @@
 import requests
-import pandas as pd
-import streamlit as st
-from datetime import datetime
-import statistics
+from datetime import datetime, timedelta
+import pytz
+from statistics import mean
 
-st.set_page_config(page_title="Scanner V4.9 PRO", layout="wide")
+TZ = pytz.timezone("America/Sao_Paulo")
 
-st.title("🌍 Scanner Automático V4.9 PRO (MODO LUCRO)")
+# ==============================
+# CONFIG
+# ==============================
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+DATA_INICIO = "2026-03-21"
+DATA_FIM = "2026-03-23"
 
-@st.cache_data(ttl=600)
-def get_matches():
-    url = "https://api.sofascore.com/api/v1/sport/football/scheduled-events/" + datetime.today().strftime("%Y-%m-%d")
-    data = requests.get(url, headers=HEADERS).json()
-    matches = []
+# ==============================
+# FETCH JOGOS FINALIZADOS
+# ==============================
 
-    for event in data.get("events", []):
-        matches.append({
-            "home_id": event["homeTeam"]["id"],
-            "away_id": event["awayTeam"]["id"],
-            "home": event["homeTeam"]["name"],
-            "away": event["awayTeam"]["name"],
-            "tournament": event["tournament"]["name"],
-            "country": event["tournament"]["category"]["name"]
-        })
+def buscar_jogos(data):
+    url = f"https://api.sofascore.com/api/v1/sport/football/events/{data}"
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-    return matches
+    r = requests.get(url, headers=headers)
+    data = r.json()
 
-@st.cache_data(ttl=600)
-def get_last_matches(team_id):
-    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/10"
-    try:
-        data = requests.get(url, headers=HEADERS).json()
-        events = data.get("events", [])
+    return data.get("events", [])
 
-        wins = 0
-        goals_scored = []
-        goals_conceded = []
-        home_wins = 0
-        away_wins = 0
-        home_games = 0
-        away_games = 0
+# ==============================
+# FORMA CONGELADA
+# ==============================
 
-        for e in events:
-            is_home = e["homeTeam"]["id"] == team_id
-            hs = e["homeScore"]["current"]
-            as_ = e["awayScore"]["current"]
+def buscar_forma(team_id, match_id):
+    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-            if is_home:
-                home_games += 1
-                goals_scored.append(hs)
-                goals_conceded.append(as_)
-                if hs > as_:
-                    wins += 1
-                    home_wins += 1
+    r = requests.get(url, headers=headers)
+    data = r.json()
+
+    resultados = []
+    gols = []
+
+    for j in data.get("events", []):
+        try:
+            if j["id"] >= match_id:
+                continue  # evita usar jogos futuros
+
+            gh = j["homeScore"]["current"]
+            ga = j["awayScore"]["current"]
+
+            if gh is None or ga is None:
+                continue
+
+            if team_id == j["homeTeam"]["id"]:
+                gols.append(gh)
+                if gh > ga:
+                    resultados.append(1)
+                elif gh == ga:
+                    resultados.append(0.5)
+                else:
+                    resultados.append(0)
             else:
-                away_games += 1
-                goals_scored.append(as_)
-                goals_conceded.append(hs)
-                if as_ > hs:
-                    wins += 1
-                    away_wins += 1
+                gols.append(ga)
+                if ga > gh:
+                    resultados.append(1)
+                elif gh == ga:
+                    resultados.append(0.5)
+                else:
+                    resultados.append(0)
 
-        win_rate = wins / max(1, len(events))
-        avg_scored = sum(goals_scored) / max(1, len(goals_scored))
-        avg_conceded = sum(goals_conceded) / max(1, len(goals_conceded))
-        home_win_rate = home_wins / max(1, home_games)
-        away_win_rate = away_wins / max(1, away_games)
+        except:
+            continue
 
-        consistency = 1 / (1 + (statistics.pvariance(goals_scored) + statistics.pvariance(goals_conceded)))
+    return resultados, gols
 
-        return {
-            "win_rate": win_rate,
-            "avg_scored": avg_scored,
-            "avg_conceded": avg_conceded,
-            "home_win_rate": home_win_rate,
-            "away_win_rate": away_win_rate,
-            "consistency": consistency
-        }
+# ==============================
+# MODELO V4.6 PRO
+# ==============================
+
+def analisar(j):
+    try:
+        home_id = j["homeTeam"]["id"]
+        away_id = j["awayTeam"]["id"]
+
+        match_id = j["id"]
+
+        forma_home, gols_home = buscar_forma(home_id, match_id)
+        forma_away, gols_away = buscar_forma(away_id, match_id)
+
+        if not forma_home or not forma_away:
+            return None
+
+        fh = mean(forma_home)
+        fa = mean(forma_away)
+
+        cons_h = len([x for x in forma_home if x > 0]) / len(forma_home)
+        cons_a = len([x for x in forma_away if x > 0]) / len(forma_away)
+
+        atk_h = mean(gols_home) if gols_home else 0
+        atk_a = mean(gols_away) if gols_away else 0
+
+        score_home = (fh*0.6) + (cons_h*0.2) + (atk_h*0.2) + 0.15
+        score_away = (fa*0.6) + (cons_a*0.2) + (atk_a*0.2)
+
+        if score_home > score_away:
+            pick = "HOME"
+        else:
+            pick = "AWAY"
+
+        # resultado real
+        gh = j["homeScore"]["current"]
+        ga = j["awayScore"]["current"]
+
+        if gh > ga:
+            real = "HOME"
+        elif ga > gh:
+            real = "AWAY"
+        else:
+            return None
+
+        return pick == real
 
     except:
-        return {
-            "win_rate": 0.5,
-            "avg_scored": 1,
-            "avg_conceded": 1,
-            "home_win_rate": 0.5,
-            "away_win_rate": 0.5,
-            "consistency": 0.5
-        }
+        return None
 
-def calculate_score(home, away):
-    forma = home["win_rate"] - away["win_rate"]
-    ataque = home["avg_scored"] - away["avg_scored"]
-    defesa = away["avg_conceded"] - home["avg_conceded"]
-    casa_fora = home["home_win_rate"] - away["away_win_rate"]
-    consistencia = home["consistency"] - away["consistency"]
+# ==============================
+# BACKTEST
+# ==============================
 
-    score = (forma * 30 + ataque * 20 + defesa * 20 + casa_fora * 20 + consistencia * 10)
-    score = max(0, min(100, 50 + score))
-    return score
+def rodar():
+    data = datetime.fromisoformat(DATA_INICIO)
+    fim = datetime.fromisoformat(DATA_FIM)
 
-def score_to_probability(score):
-    return round(score / 100, 2)
+    total = 0
+    acertos = 0
 
-def calculate_ev(prob, odd):
-    return round((prob * odd) - 1, 3)
+    while data <= fim:
+        jogos = buscar_jogos(data.strftime("%Y-%m-%d"))
 
-#⚠️ TROCAR AQUI DEPOIS POR API REAL
-def get_real_odds():
-    return 1.80
+        for j in jogos:
+            if j["status"]["type"] != "finished":
+                continue
 
-matches = get_matches()
-results = []
+            r = analisar(j)
 
-for m in matches:
-    home = get_last_matches(m["home_id"])
-    away = get_last_matches(m["away_id"])
+            if r is None:
+                continue
 
-    score = calculate_score(home, away)
-    prob = score_to_probability(score)
-    odd = get_real_odds()
-    ev = calculate_ev(prob, odd)
+            total += 1
+            if r:
+                acertos += 1
 
-    results.append({
-        "Jogo": f"{m['home']} x {m['away']}",
-        "Liga": m["tournament"],
-        "Score": round(score, 1),
-        "Prob": prob,
-        "Odd": odd,
-        "EV": ev
-    })
+        data += timedelta(days=1)
 
-if results:
-    df = pd.DataFrame(results)
+    taxa = (acertos / total) * 100 if total > 0 else 0
 
-    st.subheader("📊 Todos os Jogos")
-    st.dataframe(df, use_container_width=True)
+    print("Jogos:", total)
+    print("Acertos:", acertos)
+    print("Taxa:", round(taxa, 2), "%")
 
-    st.subheader("💰 Apostas com Valor (EV > 0)")
-    st.dataframe(df[df["EV"] > 0], use_container_width=True)
-
-else:
-    st.warning("Nenhum jogo encontrado.")
+rodar()
