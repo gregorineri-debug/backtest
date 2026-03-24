@@ -1,14 +1,13 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
 import pandas as pd
 
 st.set_page_config(page_title="xG Winner PRO", layout="wide")
 
-st.title("📊 xG Winner PRO (Scraping REAL FBref)")
+st.title("📊 xG Winner PRO (Scraping FBref - Estável)")
 
 # ==============================
-# FUNÇÃO SEGURA DE SCRAPING
+# FUNÇÃO DE SCRAPING (SEM BS4)
 # ==============================
 
 def get_team_xg_fbref(url):
@@ -19,13 +18,11 @@ def get_team_xg_fbref(url):
         if res.status_code != 200:
             return None
 
-        soup = BeautifulSoup(res.text, "lxml")
-
         tables = pd.read_html(res.text)
 
         df = None
 
-        # Procurar tabela com xG
+        # Encontrar tabela com xG
         for table in tables:
             if "xG" in table.columns and "xGA" in table.columns:
                 df = table
@@ -40,7 +37,6 @@ def get_team_xg_fbref(url):
         if len(df) < 5:
             return None
 
-        # Converter para float (segurança)
         df["xG"] = pd.to_numeric(df["xG"], errors="coerce")
         df["xGA"] = pd.to_numeric(df["xGA"], errors="coerce")
 
@@ -62,7 +58,7 @@ def get_team_xg_fbref(url):
             "xga_recent": xga_recent
         }
 
-    except Exception as e:
+    except:
         return None
 
 
@@ -81,7 +77,7 @@ home_odds = st.number_input("Odd Casa", 1.0, 20.0, 2.50)
 away_odds = st.number_input("Odd Visitante", 1.0, 20.0, 2.80)
 
 # ==============================
-# BOTÃO
+# EXECUÇÃO
 # ==============================
 
 if st.button("🚀 Analisar jogo"):
@@ -157,15 +153,14 @@ if st.button("🚀 Analisar jogo"):
         # ==============================
 
         st.subheader("💰 Valor Esperado (EV)")
-
         st.write(f"Casa: {round(ev_home,3)}")
         st.write(f"Visitante: {round(ev_away,3)}")
 
         # ==============================
-        # DECISÃO PROFISSIONAL
+        # DECISÃO
         # ==============================
 
-        st.subheader("🧠 Decisão")
+        st.subheader("🧠 Decisão Profissional")
 
         if ev_home > 0.05:
             st.success("✔️ VALOR na CASA")
