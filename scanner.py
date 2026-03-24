@@ -1,14 +1,7 @@
 import streamlit as st
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from statistics import mean
-
-# ==============================
-# CONFIG
-# ==============================
-
-DATA_INICIO = "2026-03-21"
-DATA_FIM = "2026-03-23"
 
 # ==============================
 # FETCH JOGOS
@@ -59,7 +52,7 @@ def buscar_forma(team_id, match_id):
     return resultados, gols
 
 # ==============================
-# MODELO
+# MODELO V4.6 PRO
 # ==============================
 
 def analisar(j):
@@ -99,6 +92,7 @@ def analisar(j):
             return None
 
         return {
+            "jogo": f"{j['homeTeam']['name']} x {j['awayTeam']['name']}",
             "pick": pick,
             "real": real,
             "acerto": pick == real
@@ -108,60 +102,58 @@ def analisar(j):
         return None
 
 # ==============================
-# BACKTEST
+# BACKTEST POR DIA
 # ==============================
 
-def rodar_backtest():
-    data = datetime.fromisoformat(DATA_INICIO)
-    fim = datetime.fromisoformat(DATA_FIM)
+def rodar_backtest(data_str):
+    jogos = buscar_jogos(data_str)
 
     total = 0
     acertos = 0
-
     detalhes = []
 
-    while data <= fim:
-        jogos = buscar_jogos(data.strftime("%Y-%m-%d"))
+    for j in jogos:
+        if j["status"]["type"] != "finished":
+            continue
 
-        for j in jogos:
-            if j["status"]["type"] != "finished":
-                continue
+        r = analisar(j)
 
-            r = analisar(j)
+        if r is None:
+            continue
 
-            if r is None:
-                continue
+        total += 1
+        if r["acerto"]:
+            acertos += 1
 
-            total += 1
-            if r["acerto"]:
-                acertos += 1
-
-            detalhes.append(r)
-
-        data += timedelta(days=1)
+        detalhes.append(r)
 
     taxa = (acertos / total) * 100 if total > 0 else 0
 
     return total, acertos, taxa, detalhes
 
 # ==============================
-# UI
+# UI STREAMLIT
 # ==============================
 
 st.title("📊 Backtest Profissional - Greg Stats")
 
-if st.button("Rodar Backtest"):
-    total, acertos, taxa, detalhes = rodar_backtest()
+# 🔥 SELETOR DE DATA
+data_escolhida = st.date_input("📅 Escolha a data")
+
+if st.button("🚀 Rodar Backtest"):
+    data_str = data_escolhida.strftime("%Y-%m-%d")
+
+    total, acertos, taxa, detalhes = rodar_backtest(data_str)
 
     if total == 0:
-        st.error("Nenhum jogo analisado")
+        st.error("Nenhum jogo finalizado encontrado nesta data")
     else:
         st.success("Backtest concluído")
 
-        st.write("### 📊 Resultado Geral")
-        st.write(f"Jogos analisados: {total}")
+        st.write("### 📊 Resultado")
+        st.write(f"Jogos: {total}")
         st.write(f"Acertos: {acertos}")
-        st.write(f"Taxa de acerto: {round(taxa,2)}%")
+        st.write(f"Taxa: {round(taxa,2)}%")
 
-        st.write("### 🔎 Amostra (primeiros 20)")
-        st.write(detalhes[:20])
+        st.write("### 🔎 Detalhes")
+        st.write(detalhes)
