@@ -1,28 +1,71 @@
 import streamlit as st
 import requests
 import pandas as pd
+from datetime import datetime
 
-st.set_page_config(page_title="xG Winner PRO", layout="wide")
+st.set_page_config(page_title="xG Scanner PRO", layout="wide")
 
-st.title("📊 xG Winner PRO (Scraping FBref - Estável)")
+st.title("📊 xG Scanner PRO (Jogos do Dia)")
 
 # ==============================
-# FUNÇÃO DE SCRAPING (SEM BS4)
+# FUNÇÃO: BUSCAR JOGOS (SOFASCORE)
 # ==============================
 
-def get_team_xg_fbref(url):
+def get_matches_by_date(date_str):
+    try:
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers)
+
+        data = res.json()
+
+        matches = []
+
+        for event in data["events"]:
+            home = event["homeTeam"]["name"]
+            away = event["awayTeam"]["name"]
+            league = event["tournament"]["name"]
+
+            matches.append({
+                "home": home,
+                "away": away,
+                "league": league
+            })
+
+        return matches
+
+    except:
+        return []
+
+# ==============================
+# FUNÇÃO: SCRAPING FBREF
+# ==============================
+
+def get_team_xg_fbref(team_name):
+    """
+    SIMPLIFICAÇÃO:
+    Aqui você deve mapear times -> URLs do FBref
+    (versão inicial com base manual)
+    """
+
+    TEAM_URLS = {
+        # EXEMPLO (você vai expandir isso depois)
+        "Imperatriz": "https://fbref.com/en/squads/XXXX/matchlogs/all_comps/schedule/",
+        "Retro": "https://fbref.com/en/squads/YYYY/matchlogs/all_comps/schedule/",
+    }
+
+    url = TEAM_URLS.get(team_name)
+
+    if not url:
+        return None
+
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=10)
 
-        if res.status_code != 200:
-            return None
-
         tables = pd.read_html(res.text)
 
         df = None
-
-        # Encontrar tabela com xG
         for table in tables:
             if "xG" in table.columns and "xGA" in table.columns:
                 df = table
@@ -31,22 +74,19 @@ def get_team_xg_fbref(url):
         if df is None:
             return None
 
-        # Limpeza
         df = df.dropna(subset=["xG", "xGA"])
-
-        if len(df) < 5:
-            return None
 
         df["xG"] = pd.to_numeric(df["xG"], errors="coerce")
         df["xGA"] = pd.to_numeric(df["xGA"], errors="coerce")
 
         df = df.dropna()
 
-        # MÉDIAS
+        if len(df) < 5:
+            return None
+
         xg = df["xG"].mean()
         xga = df["xGA"].mean()
 
-        # FORMA (últimos 5 jogos)
         recent = df.tail(5)
         xg_recent = recent["xG"].mean()
         xga_recent = recent["xGA"].mean()
@@ -61,129 +101,82 @@ def get_team_xg_fbref(url):
     except:
         return None
 
-
 # ==============================
-# INPUTS
+# INPUT DATA
 # ==============================
 
-st.subheader("🔗 URLs do FBref")
-
-home_url = st.text_input("Time da Casa (URL FBref)")
-away_url = st.text_input("Time Visitante (URL FBref)")
-
-st.subheader("💰 Odds")
-
-home_odds = st.number_input("Odd Casa", 1.0, 20.0, 2.50)
-away_odds = st.number_input("Odd Visitante", 1.0, 20.0, 2.80)
+st.subheader("📅 Data (formato YYYY-MM-DD)")
+date_input = st.text_input("Data", datetime.today().strftime("%Y-%m-%d"))
 
 # ==============================
 # EXECUÇÃO
 # ==============================
 
-if st.button("🚀 Analisar jogo"):
+if st.button("🚀 Rodar Scanner"):
 
-    home = get_team_xg_fbref(home_url)
-    away = get_team_xg_fbref(away_url)
+    matches = get_matches_by_date(date_input)
 
-    if not home:
-        st.error("Erro ao coletar dados do time da casa")
-    if not away:
-        st.error("Erro ao coletar dados do time visitante")
+    if not matches:
+        st.error("Nenhum jogo encontrado ou erro na API")
+    else:
 
-    if home and away:
+        results = []
 
-        # ==============================
-        # MODELO xG
-        # ==============================
+        for match in matches:
 
-        home_base = home["xg"] - home["xga"]
-        away_base = away["xg"] - away["xga"]
+            home = match["home"]
+            away = match["away"]
 
-        home_form = (home["xg_recent"] - home["xga_recent"]) * 1.5
-        away_form = (away["xg_recent"] - away["xga_recent"]) * 1.5
+            home_data = get_team_xg_fbref(home)
+            away_data = get_team_xg_fbref(away)
 
-        home_score = home_base + home_form
-        away_score = away_base + away_form
+            if not home_data or not away_data:
+                continue
 
-        diff = home_score - away_score
+            # MODELO xG
+            home_score = (home_data["xg"] - home_data["xga"]) + \
+                         (home_data["xg_recent"] - home_data["xga_recent"]) * 1.5
 
-        # ==============================
-        # PROBABILIDADE
-        # ==============================
+            away_score = (away_data["xg"] - away_data["xga"]) + \
+                         (away_data["xg_recent"] - away_data["xga_recent"]) * 1.5
 
-        total = abs(home_score) + abs(away_score)
+            diff = home_score - away_score
 
-        if total == 0:
-            prob_home = 0.5
-            prob_away = 0.5
-        else:
+            total = abs(home_score) + abs(away_score)
+
+            if total == 0:
+                continue
+
             prob_home = abs(home_score) / total
             prob_away = abs(away_score) / total
 
+            # MOCK ODDS (depois podemos integrar real)
+            odd_home = 2.0
+            odd_away = 2.0
+
+            ev_home = (prob_home * odd_home) - 1
+            ev_away = (prob_away * odd_away) - 1
+
+            # FILTRO DE VALOR
+            if ev_home > 0.05 or ev_away > 0.05:
+
+                results.append({
+                    "Jogo": f"{home} x {away}",
+                    "Liga": match["league"],
+                    "Prob Casa": round(prob_home*100,1),
+                    "Prob Visitante": round(prob_away*100,1),
+                    "EV Casa": round(ev_home,2),
+                    "EV Visitante": round(ev_away,2),
+                    "Sugestão": "Casa" if diff > 0 else "Visitante"
+                })
+
         # ==============================
-        # EV (VALOR ESPERADO)
+        # OUTPUT
         # ==============================
 
-        ev_home = (prob_home * home_odds) - 1
-        ev_away = (prob_away * away_odds) - 1
-
-        # ==============================
-        # RESULTADO
-        # ==============================
-
-        st.header("📈 Resultado do Modelo")
-
-        if diff > 0.5:
-            st.success("🏠 Vitória provável: CASA")
-        elif diff < -0.5:
-            st.success("✈️ Vitória provável: VISITANTE")
+        if results:
+            df = pd.DataFrame(results)
+            st.success(f"{len(df)} jogos com valor encontrados")
+            st.dataframe(df)
         else:
-            st.warning("⚖️ Jogo equilibrado - EVITAR")
-
-        # ==============================
-        # PROBABILIDADES
-        # ==============================
-
-        st.subheader("🔥 Probabilidades")
-        st.write(f"Casa: {round(prob_home*100,1)}%")
-        st.write(f"Visitante: {round(prob_away*100,1)}%")
-
-        # ==============================
-        # EV
-        # ==============================
-
-        st.subheader("💰 Valor Esperado (EV)")
-        st.write(f"Casa: {round(ev_home,3)}")
-        st.write(f"Visitante: {round(ev_away,3)}")
-
-        # ==============================
-        # DECISÃO
-        # ==============================
-
-        st.subheader("🧠 Decisão Profissional")
-
-        if ev_home > 0.05:
-            st.success("✔️ VALOR na CASA")
-        if ev_away > 0.05:
-            st.success("✔️ VALOR no VISITANTE")
-
-        if ev_home <= 0.05 and ev_away <= 0.05:
-            st.warning("❌ Sem valor — NÃO apostar")
-
-        # ==============================
-        # DIAGNÓSTICO
-        # ==============================
-
-        st.subheader("📊 Diagnóstico")
-
-        st.write(f"Score Casa: {round(home_score,2)}")
-        st.write(f"Score Visitante: {round(away_score,2)}")
-        st.write(f"Diferença: {round(diff,2)}")
-
-        st.write("------")
-
-        st.write("📌 xG Casa:", round(home["xg"],2))
-        st.write("📌 xGA Casa:", round(home["xga"],2))
-
-        st.write("📌 xG Visitante:", round(away["xg"],2))
-        st.write("📌 xGA Visitante:", round(away["xga"],2))
+            st.warning("Nenhum jogo com valor encontrado")
