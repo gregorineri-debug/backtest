@@ -1,136 +1,194 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
+import pandas as pd
 
 st.set_page_config(page_title="xG Winner PRO", layout="wide")
 
-st.title("📊 xG Winner PRO - Modelo Profissional")
+st.title("📊 xG Winner PRO (Scraping REAL FBref)")
 
 # ==============================
-# CONFIG
+# FUNÇÃO SEGURA DE SCRAPING
 # ==============================
 
-LEAGUES_ALLOWED = [
-    "Brazil Serie A",
-    "Premier League",
-    "La Liga",
-    "Serie A",
-    "Bundesliga"
-]
+def get_team_xg_fbref(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=10)
 
-# ==============================
-# FUNÇÕES
-# ==============================
+        if res.status_code != 200:
+            return None
 
-def get_team_xg(team_name):
-    """
-    Simulação de scraping.
-    Substituir futuramente por API real.
-    """
-    # MOCK (exemplo)
-    data = {
-        "Imperatriz": {"xg": 1.3, "xga": 1.8, "xg_recent": 1.2, "xga_recent": 1.9, "strength": 0.8},
-        "Retro": {"xg": 1.6, "xga": 1.2, "xg_recent": 1.7, "xga_recent": 1.3, "strength": 1.1},
-    }
-    return data.get(team_name, None)
+        soup = BeautifulSoup(res.text, "lxml")
 
+        tables = pd.read_html(res.text)
 
-def adjust_by_opponent(base, opponent_strength):
-    """
-    Ajuste por força do adversário
-    """
-    return base * (opponent_strength)
+        df = None
 
+        # Procurar tabela com xG
+        for table in tables:
+            if "xG" in table.columns and "xGA" in table.columns:
+                df = table
+                break
 
-def calculate_ev(prob, odd):
-    """
-    Valor esperado
-    """
-    return (prob * odd) - 1
+        if df is None:
+            return None
+
+        # Limpeza
+        df = df.dropna(subset=["xG", "xGA"])
+
+        if len(df) < 5:
+            return None
+
+        # Converter para float (segurança)
+        df["xG"] = pd.to_numeric(df["xG"], errors="coerce")
+        df["xGA"] = pd.to_numeric(df["xGA"], errors="coerce")
+
+        df = df.dropna()
+
+        # MÉDIAS
+        xg = df["xG"].mean()
+        xga = df["xGA"].mean()
+
+        # FORMA (últimos 5 jogos)
+        recent = df.tail(5)
+        xg_recent = recent["xG"].mean()
+        xga_recent = recent["xGA"].mean()
+
+        return {
+            "xg": xg,
+            "xga": xga,
+            "xg_recent": xg_recent,
+            "xga_recent": xga_recent
+        }
+
+    except Exception as e:
+        return None
 
 
 # ==============================
 # INPUTS
 # ==============================
 
-league = st.selectbox("Liga", LEAGUES_ALLOWED)
+st.subheader("🔗 URLs do FBref")
 
-home_team = st.text_input("Time da Casa", "Imperatriz")
-away_team = st.text_input("Time Visitante", "Retro")
+home_url = st.text_input("Time da Casa (URL FBref)")
+away_url = st.text_input("Time Visitante (URL FBref)")
 
-home_odds = st.number_input("Odd Casa", 1.0, 10.0, 2.50)
-away_odds = st.number_input("Odd Visitante", 1.0, 10.0, 2.80)
+st.subheader("💰 Odds")
+
+home_odds = st.number_input("Odd Casa", 1.0, 20.0, 2.50)
+away_odds = st.number_input("Odd Visitante", 1.0, 20.0, 2.80)
 
 # ==============================
-# PROCESSAMENTO
+# BOTÃO
 # ==============================
 
-if st.button("Analisar jogo"):
+if st.button("🚀 Analisar jogo"):
 
-    home = get_team_xg(home_team)
-    away = get_team_xg(away_team)
+    home = get_team_xg_fbref(home_url)
+    away = get_team_xg_fbref(away_url)
 
-    if not home or not away:
-        st.error("Dados não encontrados (implementar scraping/API real)")
-    else:
+    if not home:
+        st.error("Erro ao coletar dados do time da casa")
+    if not away:
+        st.error("Erro ao coletar dados do time visitante")
 
-        # FORÇA BASE
+    if home and away:
+
+        # ==============================
+        # MODELO xG
+        # ==============================
+
         home_base = home["xg"] - home["xga"]
         away_base = away["xg"] - away["xga"]
 
-        # FORMA
         home_form = (home["xg_recent"] - home["xga_recent"]) * 1.5
         away_form = (away["xg_recent"] - away["xga_recent"]) * 1.5
 
-        # AJUSTE POR ADVERSÁRIO
-        home_adj = adjust_by_opponent(home_base + home_form, away["strength"])
-        away_adj = adjust_by_opponent(away_base + away_form, home["strength"])
+        home_score = home_base + home_form
+        away_score = away_base + away_form
 
-        # SCORE FINAL
-        diff = home_adj - away_adj
-
-        # PROBABILIDADE SIMPLES (normalizada)
-        total = abs(home_adj) + abs(away_adj)
-        prob_home = abs(home_adj) / total if total != 0 else 0.5
-        prob_away = abs(away_adj) / total if total != 0 else 0.5
-
-        # EV
-        ev_home = calculate_ev(prob_home, home_odds)
-        ev_away = calculate_ev(prob_away, away_odds)
+        diff = home_score - away_score
 
         # ==============================
-        # OUTPUT
+        # PROBABILIDADE
         # ==============================
 
-        st.header("📈 Resultado")
+        total = abs(home_score) + abs(away_score)
+
+        if total == 0:
+            prob_home = 0.5
+            prob_away = 0.5
+        else:
+            prob_home = abs(home_score) / total
+            prob_away = abs(away_score) / total
+
+        # ==============================
+        # EV (VALOR ESPERADO)
+        # ==============================
+
+        ev_home = (prob_home * home_odds) - 1
+        ev_away = (prob_away * away_odds) - 1
+
+        # ==============================
+        # RESULTADO
+        # ==============================
+
+        st.header("📈 Resultado do Modelo")
 
         if diff > 0.5:
-            st.success(f"🏠 Vitória provável: {home_team}")
+            st.success("🏠 Vitória provável: CASA")
         elif diff < -0.5:
-            st.success(f"✈️ Vitória provável: {away_team}")
+            st.success("✈️ Vitória provável: VISITANTE")
         else:
-            st.warning("⚖️ Jogo equilibrado - evitar")
+            st.warning("⚖️ Jogo equilibrado - EVITAR")
+
+        # ==============================
+        # PROBABILIDADES
+        # ==============================
 
         st.subheader("🔥 Probabilidades")
-        st.write(f"{home_team}: {round(prob_home*100,1)}%")
-        st.write(f"{away_team}: {round(prob_away*100,1)}%")
+        st.write(f"Casa: {round(prob_home*100,1)}%")
+        st.write(f"Visitante: {round(prob_away*100,1)}%")
+
+        # ==============================
+        # EV
+        # ==============================
 
         st.subheader("💰 Valor Esperado (EV)")
-        st.write(f"{home_team}: {round(ev_home,3)}")
-        st.write(f"{away_team}: {round(ev_away,3)}")
 
-        # Flags profissionais
-        st.subheader("🧠 Decisão Profissional")
+        st.write(f"Casa: {round(ev_home,3)}")
+        st.write(f"Visitante: {round(ev_away,3)}")
+
+        # ==============================
+        # DECISÃO PROFISSIONAL
+        # ==============================
+
+        st.subheader("🧠 Decisão")
 
         if ev_home > 0.05:
-            st.success(f"VALOR na vitória do {home_team}")
+            st.success("✔️ VALOR na CASA")
         if ev_away > 0.05:
-            st.success(f"VALOR na vitória do {away_team}")
-        if ev_home <= 0.05 and ev_away <= 0.05:
-            st.warning("Sem valor - evitar aposta")
+            st.success("✔️ VALOR no VISITANTE")
 
-        # Diagnóstico
+        if ev_home <= 0.05 and ev_away <= 0.05:
+            st.warning("❌ Sem valor — NÃO apostar")
+
+        # ==============================
+        # DIAGNÓSTICO
+        # ==============================
+
         st.subheader("📊 Diagnóstico")
-        st.write(f"Score Casa Ajustado: {round(home_adj,2)}")
-        st.write(f"Score Visitante Ajustado: {round(away_adj,2)}")
+
+        st.write(f"Score Casa: {round(home_score,2)}")
+        st.write(f"Score Visitante: {round(away_score,2)}")
         st.write(f"Diferença: {round(diff,2)}")
+
+        st.write("------")
+
+        st.write("📌 xG Casa:", round(home["xg"],2))
+        st.write("📌 xGA Casa:", round(home["xga"],2))
+
+        st.write("📌 xG Visitante:", round(away["xg"],2))
+        st.write("📌 xGA Visitante:", round(away["xga"],2))
