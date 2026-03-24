@@ -3,122 +3,78 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="xG Scanner PRO", layout="wide")
+st.set_page_config(page_title="Scanner PRO V3", layout="wide")
 
-st.title("📊 xG Scanner PRO (Jogos do Dia)")
-
-# ==============================
-# BUSCAR JOGOS (SOFASCORE)
-# ==============================
-
-def get_matches_by_date(date_str):
-    try:
-        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-        formatted_date = date_obj.strftime("%Y-%m-%d")
-
-        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{formatted_date}"
-
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json"
-        }
-
-        res = requests.get(url, headers=headers, timeout=10)
-
-        if res.status_code != 200:
-            return []
-
-        data = res.json()
-
-        if "events" not in data:
-            return []
-
-        matches = []
-
-        for event in data["events"]:
-            try:
-                home = event["homeTeam"]["name"]
-                away = event["awayTeam"]["name"]
-                league = event["tournament"]["name"]
-
-                matches.append({
-                    "home": home,
-                    "away": away,
-                    "league": league
-                })
-            except:
-                continue
-
-        return matches
-
-    except:
-        return []
+st.title("📊 Scanner PRO V3 (Jogos + Odds + Ranking)")
 
 # ==============================
-# SCRAPING FBREF (xG)
+# CONFIG API
 # ==============================
 
-def get_team_xg_fbref(team_name):
+API_KEY = "SUA_API_KEY_AQUI"
 
-    # ⚠️ VOCÊ PRECISA COMPLETAR ISSO
-    TEAM_URLS = {
-        "Imperatriz": "https://fbref.com/en/squads/XXXX/matchlogs/all_comps/schedule/",
-        "Retro": "https://fbref.com/en/squads/YYYY/matchlogs/all_comps/schedule/",
-    }
+HEADERS = {
+    "x-apisports-key": API_KEY
+}
 
-    url = TEAM_URLS.get(team_name)
+# ==============================
+# BUSCAR JOGOS DO DIA
+# ==============================
 
-    if not url:
-        return None
+def get_matches(date):
+    url = f"https://v3.football.api-sports.io/fixtures?date={date}"
+    res = requests.get(url, headers=HEADERS)
+    data = res.json()
+
+    matches = []
+
+    for item in data["response"]:
+        matches.append({
+            "fixture_id": item["fixture"]["id"],
+            "home": item["teams"]["home"]["name"],
+            "away": item["teams"]["away"]["name"],
+            "league": item["league"]["name"]
+        })
+
+    return matches
+
+# ==============================
+# BUSCAR ODDS REAIS
+# ==============================
+
+def get_odds(fixture_id):
+    url = f"https://v3.football.api-sports.io/odds?fixture={fixture_id}"
+    res = requests.get(url, headers=HEADERS)
+    data = res.json()
 
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=10)
+        bets = data["response"][0]["bookmakers"][0]["bets"]
 
-        tables = pd.read_html(res.text)
-
-        df = None
-        for table in tables:
-            if "xG" in table.columns and "xGA" in table.columns:
-                df = table
-                break
-
-        if df is None:
-            return None
-
-        df = df.dropna(subset=["xG", "xGA"])
-
-        df["xG"] = pd.to_numeric(df["xG"], errors="coerce")
-        df["xGA"] = pd.to_numeric(df["xGA"], errors="coerce")
-
-        df = df.dropna()
-
-        if len(df) < 5:
-            return None
-
-        xg = df["xG"].mean()
-        xga = df["xGA"].mean()
-
-        recent = df.tail(5)
-        xg_recent = recent["xG"].mean()
-        xga_recent = recent["xGA"].mean()
-
-        return {
-            "xg": xg,
-            "xga": xga,
-            "xg_recent": xg_recent,
-            "xga_recent": xga_recent
-        }
-
+        for bet in bets:
+            if bet["name"] == "Match Winner":
+                odds = bet["values"]
+                return {
+                    "home": float(odds[0]["odd"]),
+                    "draw": float(odds[1]["odd"]),
+                    "away": float(odds[2]["odd"])
+                }
     except:
         return None
 
 # ==============================
-# INPUT
+# MODELO xG SIMPLIFICADO
 # ==============================
 
-st.subheader("📅 Data (YYYY-MM-DD)")
-date_input = st.text_input("Digite a data", datetime.today().strftime("%Y-%m-%d"))
+def calculate_strength():
+    # MOCK inteligente (substituível depois por xG real)
+    import random
+    return random.uniform(-1, 1)
+
+# ==============================
+# INPUT DATA
+# ==============================
+
+date = st.text_input("📅 Data (YYYY-MM-DD)", datetime.today().strftime("%Y-%m-%d"))
 
 # ==============================
 # EXECUÇÃO
@@ -126,78 +82,55 @@ date_input = st.text_input("Digite a data", datetime.today().strftime("%Y-%m-%d"
 
 if st.button("🚀 Rodar Scanner"):
 
-    matches = get_matches_by_date(date_input)
+    matches = get_matches(date)
 
-    # DEBUG
-    st.write("🔍 Jogos encontrados:", len(matches))
-    if matches:
-        st.write(matches[:5])
+    results = []
 
-    if not matches:
-        st.error("Nenhum jogo encontrado (teste outra data)")
+    for match in matches:
+
+        odds = get_odds(match["fixture_id"])
+
+        if not odds:
+            continue
+
+        # Modelo (placeholder xG)
+        home_score = calculate_strength()
+        away_score = calculate_strength()
+
+        total = abs(home_score) + abs(away_score)
+
+        if total == 0:
+            continue
+
+        prob_home = abs(home_score) / total
+        prob_away = abs(away_score) / total
+
+        ev_home = (prob_home * odds["home"]) - 1
+        ev_away = (prob_away * odds["away"]) - 1
+
+        best_ev = max(ev_home, ev_away)
+
+        results.append({
+            "Jogo": f"{match['home']} x {match['away']}",
+            "Liga": match["league"],
+            "Odd Casa": odds["home"],
+            "Odd Visitante": odds["away"],
+            "EV Casa": round(ev_home, 2),
+            "EV Visitante": round(ev_away, 2),
+            "Melhor EV": round(best_ev, 2),
+            "Sugestão": "Casa" if ev_home > ev_away else "Visitante"
+        })
+
+    if results:
+
+        df = pd.DataFrame(results)
+
+        # Ranking automático
+        df = df.sort_values(by="Melhor EV", ascending=False)
+
+        st.success(f"{len(df)} jogos analisados")
+
+        st.dataframe(df)
+
     else:
-
-        results = []
-
-        for match in matches:
-
-            home = match["home"]
-            away = match["away"]
-
-            home_data = get_team_xg_fbref(home)
-            away_data = get_team_xg_fbref(away)
-
-            # Pular se não tiver dados
-            if not home_data or not away_data:
-                continue
-
-            # ==============================
-            # MODELO xG
-            # ==============================
-
-            home_score = (home_data["xg"] - home_data["xga"]) + \
-                         (home_data["xg_recent"] - home_data["xga_recent"]) * 1.5
-
-            away_score = (away_data["xg"] - away_data["xga"]) + \
-                         (away_data["xg_recent"] - away_data["xga_recent"]) * 1.5
-
-            diff = home_score - away_score
-
-            total = abs(home_score) + abs(away_score)
-
-            if total == 0:
-                continue
-
-            prob_home = abs(home_score) / total
-            prob_away = abs(away_score) / total
-
-            # ⚠️ ODDS MOCK (depois podemos integrar real)
-            odd_home = 2.0
-            odd_away = 2.0
-
-            ev_home = (prob_home * odd_home) - 1
-            ev_away = (prob_away * odd_away) - 1
-
-            # FILTRO DE VALOR
-            if ev_home > 0.05 or ev_away > 0.05:
-
-                results.append({
-                    "Jogo": f"{home} x {away}",
-                    "Liga": match["league"],
-                    "Prob Casa (%)": round(prob_home*100,1),
-                    "Prob Visitante (%)": round(prob_away*100,1),
-                    "EV Casa": round(ev_home,2),
-                    "EV Visitante": round(ev_away,2),
-                    "Sugestão": "Casa" if diff > 0 else "Visitante"
-                })
-
-        # ==============================
-        # OUTPUT FINAL
-        # ==============================
-
-        if results:
-            df = pd.DataFrame(results)
-            st.success(f"✅ {len(df)} jogos com valor encontrados")
-            st.dataframe(df)
-        else:
-            st.warning("⚠️ Nenhum jogo com valor encontrado")
+        st.warning("Nenhum jogo encontrado")
