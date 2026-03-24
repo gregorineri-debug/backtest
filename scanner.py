@@ -1,177 +1,52 @@
 import streamlit as st
-import requests
-from datetime import datetime
-from statistics import mean
 
-# ==============================
-# FETCH JOGOS (CORRIGIDO)
-# ==============================
+st.set_page_config(page_title="xG Winner Model", layout="wide")
 
-def buscar_jogos(data):
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data}"
-    headers = {"User-Agent": "Mozilla/5.0"}
+st.title("📊 Modelo de Vitória baseado em xG")
 
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
-        return data.get("events", [])
-    except:
-        return []
+# Inputs manuais (você pode automatizar depois com scraping/API)
+st.header("🏠 Time da Casa")
+home_xg = st.number_input("xG médio (casa)", 0.0, 5.0, 1.5)
+home_xga = st.number_input("xGA médio (casa)", 0.0, 5.0, 1.0)
+home_xg_recent = st.number_input("xG últimos 5 jogos", 0.0, 5.0, 1.6)
+home_xga_recent = st.number_input("xGA últimos 5 jogos", 0.0, 5.0, 1.1)
 
-# ==============================
-# FORMA CONGELADA
-# ==============================
+st.header("✈️ Time Visitante")
+away_xg = st.number_input("xG médio (fora)", 0.0, 5.0, 1.2)
+away_xga = st.number_input("xGA médio (fora)", 0.0, 5.0, 1.3)
+away_xg_recent = st.number_input("xG últimos 5 jogos", 0.0, 5.0, 1.3)
+away_xga_recent = st.number_input("xGA últimos 5 jogos", 0.0, 5.0, 1.4)
 
-def buscar_forma(team_id, match_id):
-    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
-    headers = {"User-Agent": "Mozilla/5.0"}
+# Cálculo força base
+home_strength = home_xg - home_xga
+away_strength = away_xg - away_xga
 
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
+# Ajuste forma
+home_form = (home_xg_recent - home_xga_recent) * 1.5
+away_form = (away_xg_recent - away_xga_recent) * 1.5
 
-        resultados = []
-        gols = []
+# Score final
+home_score = home_strength + home_form
+away_score = away_strength + away_form
 
-        for j in data.get("events", []):
-            try:
-                # evita usar jogos futuros
-                if j["id"] >= match_id:
-                    continue
+diff = home_score - away_score
 
-                gh = j["homeScore"]["current"]
-                ga = j["awayScore"]["current"]
+st.header("📈 Resultado")
 
-                if gh is None or ga is None:
-                    continue
+if diff > 0.5:
+    st.success("🏠 Vitória provável: TIME DA CASA")
+elif diff < -0.5:
+    st.success("✈️ Vitória provável: VISITANTE")
+else:
+    st.warning("⚖️ Jogo equilibrado - evitar")
 
-                if team_id == j["homeTeam"]["id"]:
-                    gols.append(gh)
-                    resultados.append(1 if gh > ga else 0.5 if gh == ga else 0)
-                else:
-                    gols.append(ga)
-                    resultados.append(1 if ga > gh else 0.5 if gh == ga else 0)
+# Confiança
+confidence = abs(diff)
 
-            except:
-                continue
+st.metric("🔥 Confiança do modelo", round(confidence, 2))
 
-        return resultados, gols
-
-    except:
-        return [], []
-
-# ==============================
-# MODELO V4.6 PRO
-# ==============================
-
-def analisar(j):
-    try:
-        home_id = j["homeTeam"]["id"]
-        away_id = j["awayTeam"]["id"]
-        match_id = j["id"]
-
-        forma_home, gols_home = buscar_forma(home_id, match_id)
-        forma_away, gols_away = buscar_forma(away_id, match_id)
-
-        if not forma_home or not forma_away:
-            return None
-
-        fh = mean(forma_home)
-        fa = mean(forma_away)
-
-        cons_h = len([x for x in forma_home if x > 0]) / len(forma_home)
-        cons_a = len([x for x in forma_away if x > 0]) / len(forma_away)
-
-        atk_h = mean(gols_home) if gols_home else 0
-        atk_a = mean(gols_away) if gols_away else 0
-
-        score_home = (fh*0.6) + (cons_h*0.2) + (atk_h*0.2) + 0.15
-        score_away = (fa*0.6) + (cons_a*0.2) + (atk_a*0.2)
-
-        pick = "HOME" if score_home > score_away else "AWAY"
-
-        # resultado real
-        gh = j.get("homeScore", {}).get("current")
-        ga = j.get("awayScore", {}).get("current")
-
-        if gh is None or ga is None:
-            return None
-
-        if gh > ga:
-            real = "HOME"
-        elif ga > gh:
-            real = "AWAY"
-        else:
-            return None
-
-        return {
-            "jogo": f"{j['homeTeam']['name']} x {j['awayTeam']['name']}",
-            "pick": pick,
-            "real": real,
-            "acerto": pick == real
-        }
-
-    except:
-        return None
-
-# ==============================
-# BACKTEST
-# ==============================
-
-def rodar_backtest(data_str):
-    jogos = buscar_jogos(data_str)
-
-    total = 0
-    acertos = 0
-    detalhes = []
-
-    for j in jogos:
-        # 🔥 filtro correto de status
-        status = j.get("status", {}).get("type", "")
-
-        if status not in ["finished", "after_extra_time", "after_penalties"]:
-            continue
-
-        r = analisar(j)
-
-        if r is None:
-            continue
-
-        total += 1
-        if r["acerto"]:
-            acertos += 1
-
-        detalhes.append(r)
-
-    taxa = (acertos / total) * 100 if total > 0 else 0
-
-    return total, acertos, taxa, detalhes
-
-# ==============================
-# UI STREAMLIT
-# ==============================
-
-st.set_page_config(page_title="Backtest Greg Stats PRO", layout="wide")
-
-st.title("📊 Backtest Profissional - Greg Stats V4.6")
-
-# seletor de data
-data_escolhida = st.date_input("📅 Escolha a data para análise")
-
-if st.button("🚀 Rodar Backtest"):
-    data_str = data_escolhida.strftime("%Y-%m-%d")
-
-    total, acertos, taxa, detalhes = rodar_backtest(data_str)
-
-    if total == 0:
-        st.error("Nenhum jogo finalizado encontrado nesta data")
-    else:
-        st.success("Backtest concluído")
-
-        st.write("### 📊 Resultado Geral")
-        st.write(f"Jogos analisados: {total}")
-        st.write(f"Acertos: {acertos}")
-        st.write(f"Taxa de acerto: {round(taxa,2)}%")
-
-        st.write("### 🔎 Detalhes dos Jogos")
-        st.write(detalhes)
+# Diagnóstico
+st.subheader("🧠 Diagnóstico")
+st.write(f"Score Casa: {round(home_score,2)}")
+st.write(f"Score Visitante: {round(away_score,2)}")
+st.write(f"Diferença: {round(diff,2)}")
