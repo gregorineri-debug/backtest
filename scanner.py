@@ -1,9 +1,7 @@
+import streamlit as st
 import requests
 from datetime import datetime, timedelta
-import pytz
 from statistics import mean
-
-TZ = pytz.timezone("America/Sao_Paulo")
 
 # ==============================
 # CONFIG
@@ -13,7 +11,7 @@ DATA_INICIO = "2026-03-21"
 DATA_FIM = "2026-03-23"
 
 # ==============================
-# FETCH JOGOS FINALIZADOS
+# FETCH JOGOS
 # ==============================
 
 def buscar_jogos(data):
@@ -21,12 +19,10 @@ def buscar_jogos(data):
     headers = {"User-Agent": "Mozilla/5.0"}
 
     r = requests.get(url, headers=headers)
-    data = r.json()
-
-    return data.get("events", [])
+    return r.json().get("events", [])
 
 # ==============================
-# FORMA CONGELADA
+# FORMA
 # ==============================
 
 def buscar_forma(team_id, match_id):
@@ -42,7 +38,7 @@ def buscar_forma(team_id, match_id):
     for j in data.get("events", []):
         try:
             if j["id"] >= match_id:
-                continue  # evita usar jogos futuros
+                continue
 
             gh = j["homeScore"]["current"]
             ga = j["awayScore"]["current"]
@@ -52,20 +48,10 @@ def buscar_forma(team_id, match_id):
 
             if team_id == j["homeTeam"]["id"]:
                 gols.append(gh)
-                if gh > ga:
-                    resultados.append(1)
-                elif gh == ga:
-                    resultados.append(0.5)
-                else:
-                    resultados.append(0)
+                resultados.append(1 if gh > ga else 0.5 if gh == ga else 0)
             else:
                 gols.append(ga)
-                if ga > gh:
-                    resultados.append(1)
-                elif gh == ga:
-                    resultados.append(0.5)
-                else:
-                    resultados.append(0)
+                resultados.append(1 if ga > gh else 0.5 if gh == ga else 0)
 
         except:
             continue
@@ -73,14 +59,13 @@ def buscar_forma(team_id, match_id):
     return resultados, gols
 
 # ==============================
-# MODELO V4.6 PRO
+# MODELO
 # ==============================
 
 def analisar(j):
     try:
         home_id = j["homeTeam"]["id"]
         away_id = j["awayTeam"]["id"]
-
         match_id = j["id"]
 
         forma_home, gols_home = buscar_forma(home_id, match_id)
@@ -101,12 +86,8 @@ def analisar(j):
         score_home = (fh*0.6) + (cons_h*0.2) + (atk_h*0.2) + 0.15
         score_away = (fa*0.6) + (cons_a*0.2) + (atk_a*0.2)
 
-        if score_home > score_away:
-            pick = "HOME"
-        else:
-            pick = "AWAY"
+        pick = "HOME" if score_home > score_away else "AWAY"
 
-        # resultado real
         gh = j["homeScore"]["current"]
         ga = j["awayScore"]["current"]
 
@@ -117,7 +98,11 @@ def analisar(j):
         else:
             return None
 
-        return pick == real
+        return {
+            "pick": pick,
+            "real": real,
+            "acerto": pick == real
+        }
 
     except:
         return None
@@ -126,12 +111,14 @@ def analisar(j):
 # BACKTEST
 # ==============================
 
-def rodar():
+def rodar_backtest():
     data = datetime.fromisoformat(DATA_INICIO)
     fim = datetime.fromisoformat(DATA_FIM)
 
     total = 0
     acertos = 0
+
+    detalhes = []
 
     while data <= fim:
         jogos = buscar_jogos(data.strftime("%Y-%m-%d"))
@@ -146,15 +133,35 @@ def rodar():
                 continue
 
             total += 1
-            if r:
+            if r["acerto"]:
                 acertos += 1
+
+            detalhes.append(r)
 
         data += timedelta(days=1)
 
     taxa = (acertos / total) * 100 if total > 0 else 0
 
-    print("Jogos:", total)
-    print("Acertos:", acertos)
-    print("Taxa:", round(taxa, 2), "%")
+    return total, acertos, taxa, detalhes
 
-rodar()
+# ==============================
+# UI
+# ==============================
+
+st.title("📊 Backtest Profissional - Greg Stats")
+
+if st.button("Rodar Backtest"):
+    total, acertos, taxa, detalhes = rodar_backtest()
+
+    if total == 0:
+        st.error("Nenhum jogo analisado")
+    else:
+        st.success("Backtest concluído")
+
+        st.write("### 📊 Resultado Geral")
+        st.write(f"Jogos analisados: {total}")
+        st.write(f"Acertos: {acertos}")
+        st.write(f"Taxa de acerto: {round(taxa,2)}%")
+
+        st.write("### 🔎 Amostra (primeiros 20)")
+        st.write(detalhes[:20])
