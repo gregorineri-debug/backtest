@@ -4,52 +4,61 @@ from datetime import datetime
 from statistics import mean
 
 # ==============================
-# FETCH JOGOS
+# FETCH JOGOS (CORRIGIDO)
 # ==============================
 
 def buscar_jogos(data):
-    url = f"https://api.sofascore.com/api/v1/sport/football/events/{data}"
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{data}"
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    r = requests.get(url, headers=headers)
-    return r.json().get("events", [])
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+        return data.get("events", [])
+    except:
+        return []
 
 # ==============================
-# FORMA
+# FORMA CONGELADA
 # ==============================
 
 def buscar_forma(team_id, match_id):
     url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    r = requests.get(url, headers=headers)
-    data = r.json()
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
 
-    resultados = []
-    gols = []
+        resultados = []
+        gols = []
 
-    for j in data.get("events", []):
-        try:
-            if j["id"] >= match_id:
+        for j in data.get("events", []):
+            try:
+                # evita usar jogos futuros
+                if j["id"] >= match_id:
+                    continue
+
+                gh = j["homeScore"]["current"]
+                ga = j["awayScore"]["current"]
+
+                if gh is None or ga is None:
+                    continue
+
+                if team_id == j["homeTeam"]["id"]:
+                    gols.append(gh)
+                    resultados.append(1 if gh > ga else 0.5 if gh == ga else 0)
+                else:
+                    gols.append(ga)
+                    resultados.append(1 if ga > gh else 0.5 if gh == ga else 0)
+
+            except:
                 continue
 
-            gh = j["homeScore"]["current"]
-            ga = j["awayScore"]["current"]
+        return resultados, gols
 
-            if gh is None or ga is None:
-                continue
-
-            if team_id == j["homeTeam"]["id"]:
-                gols.append(gh)
-                resultados.append(1 if gh > ga else 0.5 if gh == ga else 0)
-            else:
-                gols.append(ga)
-                resultados.append(1 if ga > gh else 0.5 if gh == ga else 0)
-
-        except:
-            continue
-
-    return resultados, gols
+    except:
+        return [], []
 
 # ==============================
 # MODELO V4.6 PRO
@@ -81,8 +90,12 @@ def analisar(j):
 
         pick = "HOME" if score_home > score_away else "AWAY"
 
-        gh = j["homeScore"]["current"]
-        ga = j["awayScore"]["current"]
+        # resultado real
+        gh = j.get("homeScore", {}).get("current")
+        ga = j.get("awayScore", {}).get("current")
+
+        if gh is None or ga is None:
+            return None
 
         if gh > ga:
             real = "HOME"
@@ -102,7 +115,7 @@ def analisar(j):
         return None
 
 # ==============================
-# BACKTEST POR DIA
+# BACKTEST
 # ==============================
 
 def rodar_backtest(data_str):
@@ -113,7 +126,10 @@ def rodar_backtest(data_str):
     detalhes = []
 
     for j in jogos:
-        if j["status"]["type"] != "finished":
+        # 🔥 filtro correto de status
+        status = j.get("status", {}).get("type", "")
+
+        if status not in ["finished", "after_extra_time", "after_penalties"]:
             continue
 
         r = analisar(j)
@@ -135,10 +151,12 @@ def rodar_backtest(data_str):
 # UI STREAMLIT
 # ==============================
 
-st.title("📊 Backtest Profissional - Greg Stats")
+st.set_page_config(page_title="Backtest Greg Stats PRO", layout="wide")
 
-# 🔥 SELETOR DE DATA
-data_escolhida = st.date_input("📅 Escolha a data")
+st.title("📊 Backtest Profissional - Greg Stats V4.6")
+
+# seletor de data
+data_escolhida = st.date_input("📅 Escolha a data para análise")
 
 if st.button("🚀 Rodar Backtest"):
     data_str = data_escolhida.strftime("%Y-%m-%d")
@@ -150,10 +168,10 @@ if st.button("🚀 Rodar Backtest"):
     else:
         st.success("Backtest concluído")
 
-        st.write("### 📊 Resultado")
-        st.write(f"Jogos: {total}")
+        st.write("### 📊 Resultado Geral")
+        st.write(f"Jogos analisados: {total}")
         st.write(f"Acertos: {acertos}")
-        st.write(f"Taxa: {round(taxa,2)}%")
+        st.write(f"Taxa de acerto: {round(taxa,2)}%")
 
-        st.write("### 🔎 Detalhes")
+        st.write("### 🔎 Detalhes dos Jogos")
         st.write(detalhes)
