@@ -8,29 +8,46 @@ st.set_page_config(page_title="xG Scanner PRO", layout="wide")
 st.title("📊 xG Scanner PRO (Jogos do Dia)")
 
 # ==============================
-# FUNÇÃO: BUSCAR JOGOS (SOFASCORE)
+# BUSCAR JOGOS (SOFASCORE)
 # ==============================
 
 def get_matches_by_date(date_str):
     try:
-        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers)
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        formatted_date = date_obj.strftime("%Y-%m-%d")
+
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{formatted_date}"
+
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
+
+        res = requests.get(url, headers=headers, timeout=10)
+
+        if res.status_code != 200:
+            return []
 
         data = res.json()
+
+        if "events" not in data:
+            return []
 
         matches = []
 
         for event in data["events"]:
-            home = event["homeTeam"]["name"]
-            away = event["awayTeam"]["name"]
-            league = event["tournament"]["name"]
+            try:
+                home = event["homeTeam"]["name"]
+                away = event["awayTeam"]["name"]
+                league = event["tournament"]["name"]
 
-            matches.append({
-                "home": home,
-                "away": away,
-                "league": league
-            })
+                matches.append({
+                    "home": home,
+                    "away": away,
+                    "league": league
+                })
+            except:
+                continue
 
         return matches
 
@@ -38,18 +55,13 @@ def get_matches_by_date(date_str):
         return []
 
 # ==============================
-# FUNÇÃO: SCRAPING FBREF
+# SCRAPING FBREF (xG)
 # ==============================
 
 def get_team_xg_fbref(team_name):
-    """
-    SIMPLIFICAÇÃO:
-    Aqui você deve mapear times -> URLs do FBref
-    (versão inicial com base manual)
-    """
 
+    # ⚠️ VOCÊ PRECISA COMPLETAR ISSO
     TEAM_URLS = {
-        # EXEMPLO (você vai expandir isso depois)
         "Imperatriz": "https://fbref.com/en/squads/XXXX/matchlogs/all_comps/schedule/",
         "Retro": "https://fbref.com/en/squads/YYYY/matchlogs/all_comps/schedule/",
     }
@@ -102,11 +114,11 @@ def get_team_xg_fbref(team_name):
         return None
 
 # ==============================
-# INPUT DATA
+# INPUT
 # ==============================
 
-st.subheader("📅 Data (formato YYYY-MM-DD)")
-date_input = st.text_input("Data", datetime.today().strftime("%Y-%m-%d"))
+st.subheader("📅 Data (YYYY-MM-DD)")
+date_input = st.text_input("Digite a data", datetime.today().strftime("%Y-%m-%d"))
 
 # ==============================
 # EXECUÇÃO
@@ -116,8 +128,13 @@ if st.button("🚀 Rodar Scanner"):
 
     matches = get_matches_by_date(date_input)
 
+    # DEBUG
+    st.write("🔍 Jogos encontrados:", len(matches))
+    if matches:
+        st.write(matches[:5])
+
     if not matches:
-        st.error("Nenhum jogo encontrado ou erro na API")
+        st.error("Nenhum jogo encontrado (teste outra data)")
     else:
 
         results = []
@@ -130,10 +147,14 @@ if st.button("🚀 Rodar Scanner"):
             home_data = get_team_xg_fbref(home)
             away_data = get_team_xg_fbref(away)
 
+            # Pular se não tiver dados
             if not home_data or not away_data:
                 continue
 
+            # ==============================
             # MODELO xG
+            # ==============================
+
             home_score = (home_data["xg"] - home_data["xga"]) + \
                          (home_data["xg_recent"] - home_data["xga_recent"]) * 1.5
 
@@ -150,7 +171,7 @@ if st.button("🚀 Rodar Scanner"):
             prob_home = abs(home_score) / total
             prob_away = abs(away_score) / total
 
-            # MOCK ODDS (depois podemos integrar real)
+            # ⚠️ ODDS MOCK (depois podemos integrar real)
             odd_home = 2.0
             odd_away = 2.0
 
@@ -163,20 +184,20 @@ if st.button("🚀 Rodar Scanner"):
                 results.append({
                     "Jogo": f"{home} x {away}",
                     "Liga": match["league"],
-                    "Prob Casa": round(prob_home*100,1),
-                    "Prob Visitante": round(prob_away*100,1),
+                    "Prob Casa (%)": round(prob_home*100,1),
+                    "Prob Visitante (%)": round(prob_away*100,1),
                     "EV Casa": round(ev_home,2),
                     "EV Visitante": round(ev_away,2),
                     "Sugestão": "Casa" if diff > 0 else "Visitante"
                 })
 
         # ==============================
-        # OUTPUT
+        # OUTPUT FINAL
         # ==============================
 
         if results:
             df = pd.DataFrame(results)
-            st.success(f"{len(df)} jogos com valor encontrados")
+            st.success(f"✅ {len(df)} jogos com valor encontrados")
             st.dataframe(df)
         else:
-            st.warning("Nenhum jogo com valor encontrado")
+            st.warning("⚠️ Nenhum jogo com valor encontrado")
