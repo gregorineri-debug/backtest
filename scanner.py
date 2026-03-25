@@ -1,226 +1,252 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
+import numpy as np
 
 # =========================
-# TIMEZONE
+# CONFIG
 # =========================
-tz = pytz.timezone("America/Sao_Paulo")
-now = datetime.now(tz)
+BR_TZ = pytz.timezone("America/Sao_Paulo")
 
-st.set_page_config(page_title="Winner Model PRO", layout="wide")
-st.title("🏆 Winner Prediction PRO")
-
-st.write(f"🕒 São Paulo: {now.strftime('%d/%m/%Y %H:%M')}")
+st.set_page_config(layout="wide")
+st.title("📊 Greg Stats X V4.6 – Winner Only PRO")
 
 # =========================
 # DATA
 # =========================
-date = st.date_input("Selecione a data", value=now.date())
+data_input = st.date_input("Selecione a data", datetime.now(BR_TZ))
+data_str = data_input.strftime("%Y-%m-%d")
 
 # =========================
-# BUSCAR JOGOS
+# FUNÇÕES AUXILIARES
 # =========================
+
+def safe_average(values):
+    values = [v for v in values if v is not None]
+    if len(values) == 0:
+        return 0
+    return np.mean(values)
+
+# =========================
+# SOFASCORE FIXTURE
+# =========================
+
 def get_matches(date):
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
+    res = requests.get(url)
+    if res.status_code != 200:
+        return []
 
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date.strftime('%Y-%m-%d')}"
-    res = requests.get(url).json()
+    data = res.json()
+    matches = []
 
-    games = []
-
-    for e in res.get("events", []):
+    for event in data.get("events", []):
         try:
-            utc_time = datetime.fromtimestamp(e["startTimestamp"], tz=pytz.utc)
-            sp_time = utc_time.astimezone(tz)
+            home = event["homeTeam"]["name"]
+            away = event["awayTeam"]["name"]
+            time_utc = datetime.fromtimestamp(event["startTimestamp"], tz=pytz.utc)
+            time_br = time_utc.astimezone(BR_TZ).strftime("%H:%M")
 
-            if sp_time.date() != date:
+            matches.append({
+                "home": home,
+                "away": away,
+                "time": time_br
+            })
+        except:
+            continue
+
+    return matches
+
+# =========================
+# DADOS SOFASCORE TIME
+# =========================
+
+def get_team_data(team_name):
+    try:
+        url = f"https://api.sofascore.com/api/v1/search/all?q={team_name}"
+        res = requests.get(url).json()
+
+        team_id = None
+        for item in res["results"]:
+            if item["type"] == "team":
+                team_id = item["entity"]["id"]
+                break
+
+        if not team_id:
+            return None
+
+        # últimos jogos
+        url_matches = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
+        matches = requests.get(url_matches).json()["events"]
+
+        gols = []
+        xg = []
+        resultados = []
+
+        for m in matches:
+            if "homeScore" not in m or "current" not in m["homeScore"]:
                 continue
 
-            games.append({
-                "home": e["homeTeam"]["name"],
-                "away": e["awayTeam"]["name"],
-                "home_id": e["homeTeam"]["id"],
-                "away_id": e["awayTeam"]["id"],
-                "time": sp_time.strftime("%H:%M"),
-                "tournament_id": e["tournament"]["uniqueTournament"]["id"]
-            })
-
-        except:
-            continue
-
-    return sorted(games, key=lambda x: x["time"])
-
-# =========================
-# DADOS DO TIME (xG + FORMA)
-# =========================
-def get_team_data(team_id, n=10):
-
-    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
-    data = requests.get(url).json()
-
-    xg_list = []
-    points = 0
-
-    for e in data.get("events", [])[:n]:
-
-        try:
-            home = e["homeTeam"]["id"] == team_id
-
-            if home:
-                gf = e["homeScore"]["current"]
-                ga = e["awayScore"]["current"]
+            if m["homeTeam"]["id"] == team_id:
+                gols.append(m["homeScore"]["current"])
+                resultados.append(
+                    1 if m["homeScore"]["current"] > m["awayScore"]["current"] else 0
+                )
             else:
-                gf = e["awayScore"]["current"]
-                ga = e["homeScore"]["current"]
+                gols.append(m["awayScore"]["current"])
+                resultados.append(
+                    1 if m["awayScore"]["current"] > m["homeScore"]["current"] else 0
+                )
 
-            # 🔥 proxy xG consistente
-            xg = gf * 0.85 + 0.6
-            xga = ga * 0.85 + 0.6
+            if "xg" in m:
+                xg.append(m["xg"].get("home", 0))
 
-            xg_list.append(xg - xga)
+        # posição na tabela
+        try:
+            tournament_id = matches[0]["tournament"]["uniqueTournament"]["id"]
+            season_id = matches[0]["season"]["id"]
 
-            # forma (pontos)
-            if gf > ga:
-                points += 3
-            elif gf == ga:
-                points += 1
+            standings_url = f"https://api.sofascore.com/api/v1/unique-tournament/{tournament_id}/season/{season_id}/standings/total"
+            standings = requests.get(standings_url).json()
+
+            table = standings["standings"][0]["rows"]
+
+            position = None
+            total_teams = len(table)
+
+            for row in table:
+                if row["team"]["id"] == team_id:
+                    position = row["position"]
+                    break
 
         except:
-            continue
+            position = None
+            total_teams = None
 
-    if len(xg_list) == 0:
-        return None
-
-    return {
-        "xg": np.mean(xg_list),
-        "form": points / (n * 3)
-    }
-
-# =========================
-# CLASSIFICAÇÃO
-# =========================
-def get_standings(tournament_id):
-
-    try:
-        url = f"https://api.sofascore.com/api/v1/unique-tournament/{tournament_id}/standings/total"
-        data = requests.get(url).json()
-
-        table = data["standings"][0]["rows"]
-
-        standings = {}
-
-        for row in table:
-            standings[row["team"]["id"]] = {
-                "position": row["position"],
-                "points": row["points"]
-            }
-
-        return standings
+        return {
+            "gols": safe_average(gols),
+            "xg": safe_average(xg),
+            "forma": safe_average(resultados),
+            "position": position,
+            "total_teams": total_teams
+        }
 
     except:
-        return {}
-
-# =========================
-# MOTIVAÇÃO
-# =========================
-def motivation_score(position, total_teams):
-
-    if position <= 3:
-        return 1.0  # título
-    elif position <= 6:
-        return 0.8  # competições
-    elif position >= total_teams - 2:
-        return 1.0  # rebaixamento
-    elif position >= total_teams - 5:
-        return 0.7
-    else:
-        return 0.3  # meio tabela
-
-# =========================
-# SCORE FINAL (COM FALLBACK)
-# =========================
-def calculate_score(team_stats, standing, total_teams):
-
-    if team_stats is None:
         return None
 
-    xg_score = team_stats["xg"]
-    form_score = team_stats["form"]
+# =========================
+# MOTIVAÇÃO (TABELA)
+# =========================
 
-    # 🔥 SEM TABELA → fallback inteligente
-    if standing is None:
-        return (xg_score * 0.6) + (form_score * 0.4)
+def calc_motivation(position, total):
+    if not position or not total:
+        return 0
 
-    position = standing["position"]
-    motivation = motivation_score(position, total_teams)
+    # título / topo
+    if position <= 3:
+        return 0.3
 
-    return (xg_score * 0.4) + (form_score * 0.3) + ((1 / position) * 0.2) + (motivation * 0.1)
+    # competições
+    elif position <= 6:
+        return 0.2
+
+    # meio
+    elif position <= total - 3:
+        return 0.05
+
+    # rebaixamento
+    else:
+        return 0.25
 
 # =========================
-# EXECUÇÃO
+# SCORE FINAL
 # =========================
-games = get_matches(date)
 
-results = []
+def calc_score(data, is_home=True):
+    if not data:
+        return 0
 
-for g in games:
+    xg = data["xg"]
+    forma = data["forma"]
+    gols = data["gols"]
 
-    standings = get_standings(g["tournament_id"])
+    motivation = calc_motivation(data["position"], data["total_teams"])
 
-    if not standings:
-        standings = {}  # 🔥 fallback
+    home_bonus = 0.2 if is_home else 0
 
-    total_teams = len(standings) if standings else 20
+    score = (
+        xg * 0.5 +
+        forma * 0.3 +
+        gols * 0.1 +
+        motivation +
+        home_bonus
+    )
 
-    home_stats = get_team_data(g["home_id"])
-    away_stats = get_team_data(g["away_id"])
+    return round(score, 2)
 
-    if not home_stats or not away_stats:
-        continue
+# =========================
+# PREDIÇÃO FINAL (V4.6)
+# =========================
 
-    home_stand = standings.get(g["home_id"])
-    away_stand = standings.get(g["away_id"])
+def predict(home_data, away_data):
+    score_home = calc_score(home_data, True)
+    score_away = calc_score(away_data, False)
 
-    home_score = calculate_score(home_stats, home_stand, total_teams)
-    away_score = calculate_score(away_stats, away_stand, total_teams)
+    diff = abs(score_home - score_away)
 
-    if home_score is None or away_score is None:
-        continue
+    # filtro principal
+    if diff < 0.35:
+        return "❌ Skip", "Baixa", score_home, score_away
 
-    # decisão
-    if home_score > away_score:
+    # empate escondido
+    if score_home > 0.5 and score_away > 0.5 and diff < 0.5:
+        return "❌ Skip", "Baixa", score_home, score_away
+
+    # pick
+    if score_home > score_away:
         pick = "🏠 Casa"
     else:
         pick = "✈️ Visitante"
 
-    # 🔥 confiança
-    diff = abs(home_score - away_score)
-
-    if diff > 0.4:
-        confidence = "🔥 Alta"
-    elif diff > 0.2:
-        confidence = "⚠️ Média"
+    # confiança
+    if diff >= 1.0:
+        conf = "🔥 Alta"
+    elif diff >= 0.6:
+        conf = "✅ Boa"
     else:
-        confidence = "Baixa"
+        conf = "⚠️ Baixa"
 
-    results.append({
-        "Hora": g["time"],
-        "Jogo": f"{g['home']} vs {g['away']}",
-        "Pick": pick,
-        "Confiança": confidence,
-        "Score Casa": round(home_score, 2),
-        "Score Fora": round(away_score, 2),
-        "Pos Casa": home_stand["position"] if home_stand else "-",
-        "Pos Fora": away_stand["position"] if away_stand else "-"
-    })
+    return pick, conf, score_home, score_away
 
-df = pd.DataFrame(results)
+# =========================
+# EXECUÇÃO
+# =========================
 
-if not df.empty:
-    df = df.sort_values(by="Score Casa", ascending=False)
-    st.dataframe(df, use_container_width=True)
+matches = get_matches(data_str)
+
+if not matches:
+    st.warning("Nenhum jogo encontrado para esta data")
 else:
-    st.warning("Nenhum jogo com dados suficientes")
+    results = []
+
+    progress = st.progress(0)
+
+    for i, m in enumerate(matches):
+        home_data = get_team_data(m["home"])
+        away_data = get_team_data(m["away"])
+
+        pick, conf, sh, sa = predict(home_data, away_data)
+
+        results.append({
+            "Hora": m["time"],
+            "Jogo": f"{m['home']} vs {m['away']}",
+            "Pick": pick,
+            "Confiança": conf,
+            "Score Casa": sh,
+            "Score Fora": sa
+        })
+
+        progress.progress((i + 1) / len(matches))
+
+    st.dataframe(results, use_container_width=True)
