@@ -11,8 +11,8 @@ import pytz
 tz = pytz.timezone("America/Sao_Paulo")
 now = datetime.now(tz)
 
-st.set_page_config(page_title="xG Scanner PRO", layout="wide")
-st.title("📊 xG Scanner PRO")
+st.set_page_config(page_title="Winner Model PRO", layout="wide")
+st.title("🏆 Winner Prediction PRO")
 
 st.write(f"🕒 São Paulo: {now.strftime('%d/%m/%Y %H:%M')}")
 
@@ -22,19 +22,16 @@ st.write(f"🕒 São Paulo: {now.strftime('%d/%m/%Y %H:%M')}")
 date = st.date_input("Selecione a data", value=now.date())
 
 # =========================
-# JOGOS DO DIA
+# JOGOS
 # =========================
-def get_matches_by_date(date):
+def get_matches(date):
 
-    formatted_date = date.strftime("%Y-%m-%d")
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{formatted_date}"
-
-    res = requests.get(url)
-    data = res.json()
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date.strftime('%Y-%m-%d')}"
+    res = requests.get(url).json()
 
     games = []
 
-    for e in data.get("events", []):
+    for e in res.get("events", []):
         try:
             utc_time = datetime.fromtimestamp(e["startTimestamp"], tz=pytz.utc)
             sp_time = utc_time.astimezone(tz)
@@ -47,24 +44,25 @@ def get_matches_by_date(date):
                 "away": e["awayTeam"]["name"],
                 "home_id": e["homeTeam"]["id"],
                 "away_id": e["awayTeam"]["id"],
-                "time": sp_time.strftime("%H:%M")
+                "time": sp_time.strftime("%H:%M"),
+                "tournament_id": e["tournament"]["uniqueTournament"]["id"]
             })
 
         except:
             continue
 
-    return sorted(games, key=lambda x: x["time"])
+    return games
 
 # =========================
-# DADOS (PROXY xG)
+# DADOS TIME
 # =========================
 def get_team_data(team_id, n=10):
 
     url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
-    res = requests.get(url)
-    data = res.json()
+    data = requests.get(url).json()
 
-    stats = []
+    xg_list = []
+    points = 0
 
     for e in data.get("events", [])[:n]:
 
@@ -78,129 +76,136 @@ def get_team_data(team_id, n=10):
                 gf = e["awayScore"]["current"]
                 ga = e["homeScore"]["current"]
 
-            # 🔥 proxy consistente (sem random)
+            # proxy xG
             xg = gf * 0.85 + 0.6
             xga = ga * 0.85 + 0.6
 
-            stats.append({
-                "xG": xg,
-                "xGA": xga,
-                "venue": "Home" if home else "Away"
-            })
+            xg_list.append(xg - xga)
+
+            # pontos
+            if gf > ga:
+                points += 3
+            elif gf == ga:
+                points += 1
 
         except:
             continue
 
-    return pd.DataFrame(stats)
+    if len(xg_list) == 0:
+        return None
+
+    return {
+        "xg": np.mean(xg_list),
+        "form": points / (n * 3)
+    }
 
 # =========================
-# FILTRO CASA/FORA
+# TABELA
 # =========================
-def filter_venue(df, venue):
-    return df[df["venue"] == venue]
+def get_standings(tournament_id):
+
+    try:
+        url = f"https://api.sofascore.com/api/v1/unique-tournament/{tournament_id}/standings/total"
+        data = requests.get(url).json()
+
+        table = data["standings"][0]["rows"]
+
+        standings = {}
+
+        for row in table:
+            standings[row["team"]["id"]] = {
+                "position": row["position"],
+                "points": row["points"]
+            }
+
+        return standings
+
+    except:
+        return {}
 
 # =========================
-# PREDIÇÃO
+# MOTIVAÇÃO
 # =========================
-def predict(df_home, df_away):
+def motivation_score(position, total_teams):
 
-    if df_home.empty or df_away.empty:
-        return None, None
-
-    home_xg = df_home["xG"].mean()
-    away_xg = df_away["xG"].mean()
-
-    home_xga = df_home["xGA"].mean()
-    away_xga = df_away["xGA"].mean()
-
-    home_score = (home_xg + away_xga) / 2
-    away_score = (away_xg + home_xga) / 2
-
-    total = home_score + away_score
-
-    if total == 0:
-        return None, None
-
-    prob_home = home_score / total
-    prob_away = away_score / total
-
-    if prob_home > 0.55:
-        pick_v = "🏠 Casa"
-    elif prob_away > 0.55:
-        pick_v = "✈️ Visitante"
+    if position <= 3:
+        return 1.0  # título
+    elif position <= 6:
+        return 0.8  # competições
+    elif position >= total_teams - 2:
+        return 1.0  # rebaixamento
+    elif position >= total_teams - 5:
+        return 0.7
     else:
-        pick_v = "⚖️ No Bet"
-
-    pick_g = "Over 2.5" if total > 2.5 else "Under 2.5"
-
-    return pick_v, pick_g
+        return 0.3  # meio tabela
 
 # =========================
-# CONSOLIDAÇÃO FINAL
+# SCORE FINAL
 # =========================
-def final_pick(picks):
+def calculate_score(team_stats, standing, total_teams):
 
-    picks = [p for p in picks if p is not None]
+    if team_stats is None or standing is None:
+        return None
 
-    casa = picks.count("🏠 Casa")
-    fora = picks.count("✈️ Visitante")
+    xg_score = team_stats["xg"]
+    form_score = team_stats["form"]
 
-    max_val = max(casa, fora)
+    position = standing["position"]
 
-    if max_val == 4:
-        return "🔥🔥 MUITO FORTE"
-    elif max_val == 3:
-        return "🔥 FORTE"
-    elif max_val == 2:
-        return "⚠️ MÉDIO"
-    else:
-        return "❌ DESCARTAR"
+    motivation = motivation_score(position, total_teams)
+
+    return (xg_score * 0.4) + (form_score * 0.3) + ((1 / position) * 0.2) + (motivation * 0.1)
 
 # =========================
 # EXECUÇÃO
 # =========================
-games = get_matches_by_date(date)
+games = get_matches(date)
 
 results = []
 
 for g in games:
 
-    df_home_10 = get_team_data(g["home_id"], 10)
-    df_away_10 = get_team_data(g["away_id"], 10)
+    standings = get_standings(g["tournament_id"])
 
-    if df_home_10.empty or df_away_10.empty:
+    if not standings:
         continue
 
-    df_home_5 = df_home_10.head(5)
-    df_away_5 = df_away_10.head(5)
+    total_teams = len(standings)
 
-    df_home_home_10 = filter_venue(df_home_10, "Home")
-    df_away_away_10 = filter_venue(df_away_10, "Away")
+    home_stats = get_team_data(g["home_id"])
+    away_stats = get_team_data(g["away_id"])
 
-    df_home_home_5 = filter_venue(df_home_5, "Home")
-    df_away_away_5 = filter_venue(df_away_5, "Away")
+    home_stand = standings.get(g["home_id"])
+    away_stand = standings.get(g["away_id"])
 
-    p1, g1 = predict(df_home_10, df_away_10)
-    p2, g2 = predict(df_home_5, df_away_5)
-    p3, g3 = predict(df_home_home_10, df_away_away_10)
-    p4, g4 = predict(df_home_home_5, df_away_away_5)
+    if not home_stats or not away_stats or not home_stand or not away_stand:
+        continue
+
+    home_score = calculate_score(home_stats, home_stand, total_teams)
+    away_score = calculate_score(away_stats, away_stand, total_teams)
+
+    if home_score is None or away_score is None:
+        continue
+
+    if home_score > away_score:
+        pick = "🏠 Casa"
+    else:
+        pick = "✈️ Visitante"
 
     results.append({
         "Hora": g["time"],
         "Jogo": f"{g['home']} vs {g['away']}",
-
-        "10G V": p1, "10G G": g1,
-        "5G V": p2, "5G G": g2,
-        "10H/A V": p3, "10H/A G": g3,
-        "5H/A V": p4, "5H/A G": g4,
-
-        "Pick Final": final_pick([p1, p2, p3, p4])
+        "Pick": pick,
+        "Score Casa": round(home_score, 2),
+        "Score Fora": round(away_score, 2),
+        "Pos Casa": home_stand["position"],
+        "Pos Fora": away_stand["position"]
     })
 
 df = pd.DataFrame(results)
 
 if not df.empty:
-    df = df.sort_values("Hora")
+    df = df.sort_values(by="Score Casa", ascending=False)
     st.dataframe(df, use_container_width=True)
 else:
-    st.warning("Nenhum jogo com dados suficientes")
+    st.warning("Sem dados suficientes")
