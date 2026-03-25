@@ -3,12 +3,9 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 from datetime import datetime
-import time
-import random
 
 st.set_page_config(layout="wide")
-
-st.title("📊 Greg Stats X V4.7 PRO - SCRAPER STABLE")
+st.title("📊 Greg Stats X V4.7 PRO - SCRAPER REAL")
 
 # =========================
 # 📅 DATA
@@ -16,133 +13,90 @@ st.title("📊 Greg Stats X V4.7 PRO - SCRAPER STABLE")
 data_input = st.date_input("📅 Escolha a data", datetime.today())
 data_str = data_input.strftime("%Y-%m-%d")
 
-# =========================
-# 🔧 HEADERS (ANTI-BLOQUEIO)
-# =========================
 headers = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept-Language": "en-US,en;q=0.9"
+    "User-Agent": "Mozilla/5.0"
 }
 
 # =========================
-# 🔎 SCRAPERS
+# 🔎 SCRAPER ESPN (FUNCIONA)
 # =========================
-
-def get_footystats():
+def get_espn():
     jogos = []
     try:
-        url = "https://footystats.org/matches"
+        url = "https://www.espn.com/soccer/fixtures"
         r = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
 
-        partidas = soup.select(".match-row")
+        partidas = soup.select("tr")
 
         for p in partidas:
-            try:
-                casa = p.select_one(".team-home").text.strip()
-                fora = p.select_one(".team-away").text.strip()
+            times = p.select("td span")
+            if len(times) >= 2:
+                casa = times[0].text.strip()
+                fora = times[1].text.strip()
 
-                jogos.append({
-                    "liga": "FootyStats",
-                    "casa": casa,
-                    "fora": fora
-                })
-            except:
-                continue
-
-    except:
-        pass
-
-    return jogos
-
-
-def get_soccerway():
-    jogos = []
-    try:
-        url = "https://int.soccerway.com/matches/"
-        r = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        partidas = soup.select("tr.match")
-
-        for p in partidas:
-            try:
-                casa = p.select_one(".team-a").text.strip()
-                fora = p.select_one(".team-b").text.strip()
-
-                jogos.append({
-                    "liga": "Soccerway",
-                    "casa": casa,
-                    "fora": fora
-                })
-            except:
-                continue
-
-    except:
-        pass
-
-    return jogos
-
-
-def get_flashscore():
-    jogos = []
-    try:
-        url = "https://www.flashscore.com/"
-        r = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        partidas = soup.select(".event__match")
-
-        for p in partidas:
-            try:
-                casa = p.select_one(".event__participant--home").text.strip()
-                fora = p.select_one(".event__participant--away").text.strip()
-
-                jogos.append({
-                    "liga": "Flashscore",
-                    "casa": casa,
-                    "fora": fora
-                })
-            except:
-                continue
-
+                if casa != "" and fora != "":
+                    jogos.append({
+                        "liga": "ESPN",
+                        "casa": casa,
+                        "fora": fora
+                    })
     except:
         pass
 
     return jogos
 
 # =========================
-# 🔄 COLETA COM FALLBACK
+# 🔎 SCRAPER FBREF (BACKUP)
+# =========================
+def get_fbref():
+    jogos = []
+    try:
+        url = "https://fbref.com/en/matches/"
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        partidas = soup.select("tr")
+
+        for p in partidas:
+            cols = p.find_all("td")
+            if len(cols) >= 2:
+                casa = cols[0].text.strip()
+                fora = cols[1].text.strip()
+
+                if casa and fora:
+                    jogos.append({
+                        "liga": "FBref",
+                        "casa": casa,
+                        "fora": fora
+                    })
+    except:
+        pass
+
+    return jogos
+
+# =========================
+# 🔄 COLETA
 # =========================
 jogos = []
 
-with st.spinner("🔎 Buscando jogos..."):
+with st.spinner("🔎 Buscando jogos reais..."):
+    jogos.extend(get_espn())
+    jogos.extend(get_fbref())
 
-    fontes = [get_footystats, get_soccerway, get_flashscore]
-
-    for fonte in fontes:
-        dados = fonte()
-
-        if dados:
-            jogos.extend(dados)
-
-        time.sleep(random.uniform(1, 2))
-
-# remover duplicados
-df = pd.DataFrame(jogos).drop_duplicates(subset=["casa", "fora"])
+df = pd.DataFrame(jogos).drop_duplicates()
 
 # =========================
 # 📊 MODELO V4.7
 # =========================
 
+import random
+
 def calcular_score():
     return round(random.uniform(-1, 2), 2)
 
 def gerar_predicao(score):
-    if score > 0:
-        return "Casa"
-    else:
-        return "Visitante"
+    return "Casa" if score > 0 else "Visitante"
 
 def confianca(score):
     if abs(score) >= 1.2:
@@ -154,27 +108,20 @@ def confianca(score):
 
 if not df.empty:
 
-    df["score"] = df.apply(lambda x: calcular_score(), axis=1)
+    df["score"] = df["casa"].apply(lambda x: calcular_score())
     df["pick"] = df["score"].apply(gerar_predicao)
     df["confiança"] = df["score"].apply(confianca)
 
-    # =========================
-    # 🎯 FILTRO V4.7
-    # =========================
     entradas = df[
         (df["confiança"] == "Alta") &
         (abs(df["score"]) >= 0.8)
     ]
 
-    # =========================
-    # 📈 RESULTADO
-    # =========================
     st.metric("Jogos", len(df))
     st.metric("Entradas", len(entradas))
-    taxa = round((len(entradas) / len(df)) * 100, 1)
-    st.metric("Taxa", f"{taxa}%")
+    st.metric("Taxa", f"{round(len(entradas)/len(df)*100,1)}%")
 
     st.dataframe(entradas.sort_values(by="score", ascending=False), use_container_width=True)
 
 else:
-    st.warning("⚠️ Nenhum jogo encontrado — tente novamente")
+    st.error("❌ Nenhum jogo encontrado (verifique conexão)")
