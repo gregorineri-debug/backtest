@@ -1,252 +1,135 @@
 import streamlit as st
-import requests
-from datetime import datetime, timedelta
-import pytz
-import numpy as np
-
-# =========================
-# CONFIG
-# =========================
-BR_TZ = pytz.timezone("America/Sao_Paulo")
+import pandas as pd
+from datetime import datetime
 
 st.set_page_config(layout="wide")
-st.title("📊 Greg Stats X V4.6 – Winner Only PRO")
 
-# =========================
-# DATA
-# =========================
-data_input = st.date_input("Selecione a data", datetime.now(BR_TZ))
-data_str = data_input.strftime("%Y-%m-%d")
+st.title("📊 Greg Stats X V4.7 - Scanner de Jogos")
 
-# =========================
-# FUNÇÕES AUXILIARES
-# =========================
+# Upload da base
+uploaded_file = st.file_uploader("📂 Envie a base de jogos (CSV)", type=["csv"])
 
-def safe_average(values):
-    values = [v for v in values if v is not None]
-    if len(values) == 0:
-        return 0
-    return np.mean(values)
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
 
-# =========================
-# SOFASCORE FIXTURE
-# =========================
+    # Padronização
+    df.columns = [c.strip() for c in df.columns]
 
-def get_matches(date):
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
-    res = requests.get(url)
-    if res.status_code != 200:
-        return []
+    # Converter horário
+    if "Hora" in df.columns:
+        df["Hora"] = pd.to_datetime(df["Hora"], format="%H:%M", errors="coerce").dt.time
 
-    data = res.json()
-    matches = []
+    # Seleção de data manual
+    data_escolhida = st.date_input("📅 Escolha a data dos jogos", datetime.today())
 
-    for event in data.get("events", []):
+    # =========================
+    # 🔬 FILTRO V4.7
+    # =========================
+    def aplicar_v47(row):
         try:
-            home = event["homeTeam"]["name"]
-            away = event["awayTeam"]["name"]
-            time_utc = datetime.fromtimestamp(event["startTimestamp"], tz=pytz.utc)
-            time_br = time_utc.astimezone(BR_TZ).strftime("%H:%M")
+            score_diff = row["Score Casa"] - row["Score Fora"]
+            confianca = row["Confiança"]
+            pick = row["Pick"]
 
-            matches.append({
-                "home": home,
-                "away": away,
-                "time": time_br
-            })
-        except:
-            continue
+            # Regra base
+            if abs(score_diff) < 0.25:
+                return "❌ Ruído"
 
-    return matches
+            # Casa forte
+            if pick == "🏠 Casa":
+                if score_diff >= 0.30 and confianca in ["🔥 Alta", "⚠️ Média"]:
+                    return "✅ Aposta"
 
-# =========================
-# DADOS SOFASCORE TIME
-# =========================
+            # Visitante forte
+            if pick == "✈️ Visitante":
+                if score_diff <= -0.45 and confianca == "🔥 Alta":
+                    return "✅ Aposta"
 
-def get_team_data(team_name):
-    try:
-        url = f"https://api.sofascore.com/api/v1/search/all?q={team_name}"
-        res = requests.get(url).json()
-
-        team_id = None
-        for item in res["results"]:
-            if item["type"] == "team":
-                team_id = item["entity"]["id"]
-                break
-
-        if not team_id:
-            return None
-
-        # últimos jogos
-        url_matches = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
-        matches = requests.get(url_matches).json()["events"]
-
-        gols = []
-        xg = []
-        resultados = []
-
-        for m in matches:
-            if "homeScore" not in m or "current" not in m["homeScore"]:
-                continue
-
-            if m["homeTeam"]["id"] == team_id:
-                gols.append(m["homeScore"]["current"])
-                resultados.append(
-                    1 if m["homeScore"]["current"] > m["awayScore"]["current"] else 0
-                )
-            else:
-                gols.append(m["awayScore"]["current"])
-                resultados.append(
-                    1 if m["awayScore"]["current"] > m["homeScore"]["current"] else 0
-                )
-
-            if "xg" in m:
-                xg.append(m["xg"].get("home", 0))
-
-        # posição na tabela
-        try:
-            tournament_id = matches[0]["tournament"]["uniqueTournament"]["id"]
-            season_id = matches[0]["season"]["id"]
-
-            standings_url = f"https://api.sofascore.com/api/v1/unique-tournament/{tournament_id}/season/{season_id}/standings/total"
-            standings = requests.get(standings_url).json()
-
-            table = standings["standings"][0]["rows"]
-
-            position = None
-            total_teams = len(table)
-
-            for row in table:
-                if row["team"]["id"] == team_id:
-                    position = row["position"]
-                    break
+            return "❌ Fora"
 
         except:
-            position = None
-            total_teams = None
+            return "❌ Erro"
 
-        return {
-            "gols": safe_average(gols),
-            "xg": safe_average(xg),
-            "forma": safe_average(resultados),
-            "position": position,
-            "total_teams": total_teams
-        }
+    df["Filtro V4.7"] = df.apply(aplicar_v47, axis=1)
 
-    except:
-        return None
+    # =========================
+    # 📊 SCORE FINAL
+    # =========================
+    def score_final(row):
+        base = abs(row["Score Casa"] - row["Score Fora"])
 
-# =========================
-# MOTIVAÇÃO (TABELA)
-# =========================
+        if row["Confiança"] == "🔥 Alta":
+            base += 0.2
+        elif row["Confiança"] == "⚠️ Média":
+            base += 0.1
 
-def calc_motivation(position, total):
-    if not position or not total:
-        return 0
+        return round(base, 2)
 
-    # título / topo
-    if position <= 3:
-        return 0.3
+    df["Score Final"] = df.apply(score_final, axis=1)
 
-    # competições
-    elif position <= 6:
-        return 0.2
+    # =========================
+    # 🎯 CLASSIFICAÇÃO
+    # =========================
+    def classificar(score):
+        if score >= 1.2:
+            return "🟢 Muito Forte"
+        elif score >= 0.8:
+            return "🟡 Forte"
+        elif score >= 0.5:
+            return "🟠 Moderado"
+        else:
+            return "🔴 Fraco"
 
-    # meio
-    elif position <= total - 3:
-        return 0.05
+    df["Classificação"] = df["Score Final"].apply(classificar)
 
-    # rebaixamento
-    else:
-        return 0.25
+    # =========================
+    # FILTRAR APOSTAS
+    # =========================
+    apostas = df[df["Filtro V4.7"] == "✅ Aposta"]
 
-# =========================
-# SCORE FINAL
-# =========================
+    # Ordenar
+    apostas = apostas.sort_values(by="Score Final", ascending=False)
 
-def calc_score(data, is_home=True):
-    if not data:
-        return 0
+    # =========================
+    # 📈 DASHBOARD
+    # =========================
+    st.subheader("📈 Resumo")
 
-    xg = data["xg"]
-    forma = data["forma"]
-    gols = data["gols"]
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Jogos", len(df))
+    col2.metric("Entradas V4.7", len(apostas))
+    col3.metric("Taxa Seleção", f"{(len(apostas)/len(df)*100):.1f}%")
 
-    motivation = calc_motivation(data["position"], data["total_teams"])
+    # =========================
+    # 📋 TABELA FINAL
+    # =========================
+    st.subheader("🎯 Picks Selecionadas")
 
-    home_bonus = 0.2 if is_home else 0
-
-    score = (
-        xg * 0.5 +
-        forma * 0.3 +
-        gols * 0.1 +
-        motivation +
-        home_bonus
+    st.dataframe(
+        apostas[
+            [
+                "Hora",
+                "Jogo",
+                "Pick",
+                "Confiança",
+                "Score Casa",
+                "Score Fora",
+                "Score Final",
+                "Classificação",
+            ]
+        ],
+        use_container_width=True
     )
 
-    return round(score, 2)
+    # =========================
+    # 📥 DOWNLOAD
+    # =========================
+    csv = apostas.to_csv(index=False).encode("utf-8")
 
-# =========================
-# PREDIÇÃO FINAL (V4.6)
-# =========================
-
-def predict(home_data, away_data):
-    score_home = calc_score(home_data, True)
-    score_away = calc_score(away_data, False)
-
-    diff = abs(score_home - score_away)
-
-    # filtro principal
-    if diff < 0.35:
-        return "❌ Skip", "Baixa", score_home, score_away
-
-    # empate escondido
-    if score_home > 0.5 and score_away > 0.5 and diff < 0.5:
-        return "❌ Skip", "Baixa", score_home, score_away
-
-    # pick
-    if score_home > score_away:
-        pick = "🏠 Casa"
-    else:
-        pick = "✈️ Visitante"
-
-    # confiança
-    if diff >= 1.0:
-        conf = "🔥 Alta"
-    elif diff >= 0.6:
-        conf = "✅ Boa"
-    else:
-        conf = "⚠️ Baixa"
-
-    return pick, conf, score_home, score_away
-
-# =========================
-# EXECUÇÃO
-# =========================
-
-matches = get_matches(data_str)
-
-if not matches:
-    st.warning("Nenhum jogo encontrado para esta data")
-else:
-    results = []
-
-    progress = st.progress(0)
-
-    for i, m in enumerate(matches):
-        home_data = get_team_data(m["home"])
-        away_data = get_team_data(m["away"])
-
-        pick, conf, sh, sa = predict(home_data, away_data)
-
-        results.append({
-            "Hora": m["time"],
-            "Jogo": f"{m['home']} vs {m['away']}",
-            "Pick": pick,
-            "Confiança": conf,
-            "Score Casa": sh,
-            "Score Fora": sa
-        })
-
-        progress.progress((i + 1) / len(matches))
-
-    st.dataframe(results, use_container_width=True)
+    st.download_button(
+        "📥 Baixar Picks",
+        csv,
+        "picks_v47.csv",
+        "text/csv",
+        key="download-csv"
+    )
