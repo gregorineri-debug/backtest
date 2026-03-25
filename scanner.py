@@ -9,48 +9,41 @@ st.set_page_config(layout="wide")
 # CONFIG
 # ==============================
 
-API_KEY = "SUA_API_KEY_AQUI"
-BASE_URL = "https://api.football-data.org/v4/matches"
+API_KEY = "SUA_API_KEY_RAPIDAPI"
+BASE_URL = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
+
+HEADERS = {
+    "X-RapidAPI-Key": API_KEY,
+    "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
+}
 
 # ==============================
-# FUNÇÕES DE DADOS
+# BUSCAR JOGOS
 # ==============================
 
 def get_matches(date):
-    headers = {"X-Auth-Token": API_KEY}
-    params = {"dateFrom": date, "dateTo": date}
-
     try:
-        r = requests.get(BASE_URL, headers=headers, params=params)
-        data = r.json()
-        return data.get("matches", [])
+        response = requests.get(BASE_URL, headers=HEADERS, params={"date": date})
+        data = response.json()
+        return data.get("response", [])
     except:
         return []
 
-def safe(val, default=0):
-    return val if val is not None else default
-
 # ==============================
-# SCORE V4.7 PRO
+# SCORE V4.7
 # ==============================
 
 def calcular_score(match):
-
-    home = match["homeTeam"]["name"]
-    away = match["awayTeam"]["name"]
-
-    # Simulação de métricas reais (substituível por APIs futuras)
     try:
-        form_home = safe(match.get("score", {}).get("fullTime", {}).get("home"), 1)
-        form_away = safe(match.get("score", {}).get("fullTime", {}).get("away"), 1)
+        home = match["teams"]["home"]["name"]
+        away = match["teams"]["away"]["name"]
 
-        # Score base
-        score = (form_home + 1) - (form_away + 1)
+        goals_home = match["goals"]["home"] or 0
+        goals_away = match["goals"]["away"] or 0
 
-        # Ajustes leves (V4.7 PRO)
+        score = (goals_home + 1) - (goals_away + 1)
+
         score *= 0.6
-
-        # Mandante boost
         score += 0.25
 
         return score
@@ -59,10 +52,10 @@ def calcular_score(match):
         return 0
 
 # ==============================
-# FILTRO V4.7
+# FILTRO
 # ==============================
 
-def aplicar_filtros(score):
+def aplicar_filtro(score):
     return score >= 0.55
 
 # ==============================
@@ -72,17 +65,18 @@ def aplicar_filtros(score):
 st.title("⚽ Greg Stats X V4.7 PRO (Dados Reais)")
 
 data = st.date_input("📅 Escolha a data", datetime.today())
+data_str = data.strftime("%Y-%m-%d")
 
-matches = get_matches(str(data))
+matches = get_matches(data_str)
 
 resultados = []
 
 for m in matches:
     score = calcular_score(m)
 
-    if aplicar_filtros(score):
+    if aplicar_filtro(score):
         resultados.append({
-            "Jogo": f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}",
+            "Jogo": f"{m['teams']['home']['name']} vs {m['teams']['away']['name']}",
             "Pick": "Casa",
             "Score": round(score, 2),
             "Confiança": "Alta" if score >= 0.75 else "Média"
@@ -91,7 +85,7 @@ for m in matches:
 df = pd.DataFrame(resultados)
 
 # ==============================
-# OUTPUT
+# MÉTRICAS
 # ==============================
 
 col1, col2, col3 = st.columns(3)
