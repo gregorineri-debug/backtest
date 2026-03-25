@@ -22,7 +22,7 @@ st.write(f"🕒 São Paulo: {now.strftime('%d/%m/%Y %H:%M')}")
 date = st.date_input("Selecione a data", value=now.date())
 
 # =========================
-# JOGOS
+# BUSCAR JOGOS
 # =========================
 def get_matches(date):
 
@@ -51,10 +51,10 @@ def get_matches(date):
         except:
             continue
 
-    return games
+    return sorted(games, key=lambda x: x["time"])
 
 # =========================
-# DADOS TIME
+# DADOS DO TIME (xG + FORMA)
 # =========================
 def get_team_data(team_id, n=10):
 
@@ -76,13 +76,13 @@ def get_team_data(team_id, n=10):
                 gf = e["awayScore"]["current"]
                 ga = e["homeScore"]["current"]
 
-            # proxy xG
+            # 🔥 proxy xG consistente
             xg = gf * 0.85 + 0.6
             xga = ga * 0.85 + 0.6
 
             xg_list.append(xg - xga)
 
-            # pontos
+            # forma (pontos)
             if gf > ga:
                 points += 3
             elif gf == ga:
@@ -100,7 +100,7 @@ def get_team_data(team_id, n=10):
     }
 
 # =========================
-# TABELA
+# CLASSIFICAÇÃO
 # =========================
 def get_standings(tournament_id):
 
@@ -140,18 +140,21 @@ def motivation_score(position, total_teams):
         return 0.3  # meio tabela
 
 # =========================
-# SCORE FINAL
+# SCORE FINAL (COM FALLBACK)
 # =========================
 def calculate_score(team_stats, standing, total_teams):
 
-    if team_stats is None or standing is None:
+    if team_stats is None:
         return None
 
     xg_score = team_stats["xg"]
     form_score = team_stats["form"]
 
-    position = standing["position"]
+    # 🔥 SEM TABELA → fallback inteligente
+    if standing is None:
+        return (xg_score * 0.6) + (form_score * 0.4)
 
+    position = standing["position"]
     motivation = motivation_score(position, total_teams)
 
     return (xg_score * 0.4) + (form_score * 0.3) + ((1 / position) * 0.2) + (motivation * 0.1)
@@ -168,18 +171,18 @@ for g in games:
     standings = get_standings(g["tournament_id"])
 
     if not standings:
-        continue
+        standings = {}  # 🔥 fallback
 
-    total_teams = len(standings)
+    total_teams = len(standings) if standings else 20
 
     home_stats = get_team_data(g["home_id"])
     away_stats = get_team_data(g["away_id"])
 
+    if not home_stats or not away_stats:
+        continue
+
     home_stand = standings.get(g["home_id"])
     away_stand = standings.get(g["away_id"])
-
-    if not home_stats or not away_stats or not home_stand or not away_stand:
-        continue
 
     home_score = calculate_score(home_stats, home_stand, total_teams)
     away_score = calculate_score(away_stats, away_stand, total_teams)
@@ -187,19 +190,31 @@ for g in games:
     if home_score is None or away_score is None:
         continue
 
+    # decisão
     if home_score > away_score:
         pick = "🏠 Casa"
     else:
         pick = "✈️ Visitante"
 
+    # 🔥 confiança
+    diff = abs(home_score - away_score)
+
+    if diff > 0.4:
+        confidence = "🔥 Alta"
+    elif diff > 0.2:
+        confidence = "⚠️ Média"
+    else:
+        confidence = "Baixa"
+
     results.append({
         "Hora": g["time"],
         "Jogo": f"{g['home']} vs {g['away']}",
         "Pick": pick,
+        "Confiança": confidence,
         "Score Casa": round(home_score, 2),
         "Score Fora": round(away_score, 2),
-        "Pos Casa": home_stand["position"],
-        "Pos Fora": away_stand["position"]
+        "Pos Casa": home_stand["position"] if home_stand else "-",
+        "Pos Fora": away_stand["position"] if away_stand else "-"
     })
 
 df = pd.DataFrame(results)
@@ -208,4 +223,4 @@ if not df.empty:
     df = df.sort_values(by="Score Casa", ascending=False)
     st.dataframe(df, use_container_width=True)
 else:
-    st.warning("Sem dados suficientes")
+    st.warning("Nenhum jogo com dados suficientes")
