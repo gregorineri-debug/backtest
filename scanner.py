@@ -2,11 +2,10 @@ import streamlit as st
 import requests
 import pandas as pd
 from datetime import datetime
-from bs4 import BeautifulSoup
 
 st.set_page_config(layout="wide")
 
-st.title("⚽ Greg Stats X V4.7 PRO (Scraping Real)")
+st.title("⚽ Greg Stats X V4.8 ELITE (Scraping Real)")
 
 # ==============================
 # DATA
@@ -16,7 +15,7 @@ data = st.date_input("📅 Escolha a data", datetime.today())
 data_str = data.strftime("%Y%m%d")
 
 # ==============================
-# ESPN (JOGOS DO DIA)
+# ESPN - JOGOS DO DIA
 # ==============================
 
 def get_matches(date):
@@ -37,7 +36,9 @@ def get_matches(date):
 
             jogos.append({
                 "home": home["team"]["displayName"],
-                "away": away["team"]["displayName"]
+                "away": away["team"]["displayName"],
+                "home_id": home["team"]["id"],
+                "away_id": away["team"]["id"]
             })
 
         return jogos
@@ -46,42 +47,67 @@ def get_matches(date):
         return []
 
 # ==============================
-# SCRAPING FORMA (SOFASCORE)
+# ESPN - FORMA REAL (ULTIMOS JOGOS)
 # ==============================
 
-def get_form(team_name):
+def get_team_form(team_id):
     try:
-        url = f"https://www.sofascore.com/search?q={team_name.replace(' ', '%20')}"
+        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/team/{team_id}/results"
         r = requests.get(url)
+        data = r.json()
 
-        soup = BeautifulSoup(r.text, "html.parser")
+        jogos = data.get("events", [])[:5]
 
-        # simulação leve (fallback seguro)
-        # (Sofascore usa JS pesado → scraping direto é limitado)
-        import random
-        return random.uniform(0.8, 1.2)
+        pontos = 0
+
+        for j in jogos:
+            comp = j["competitions"][0]
+            teams = comp["competitors"]
+
+            home = next(t for t in teams if t["homeAway"] == "home")
+            away = next(t for t in teams if t["homeAway"] == "away")
+
+            g_home = int(home["score"])
+            g_away = int(away["score"])
+
+            if home["team"]["id"] == team_id:
+                if g_home > g_away:
+                    pontos += 3
+                elif g_home == g_away:
+                    pontos += 1
+            else:
+                if g_away > g_home:
+                    pontos += 3
+                elif g_home == g_away:
+                    pontos += 1
+
+        return pontos / 15  # normaliza 0 a 1
 
     except:
-        return 1.0
+        return 0.5
 
 # ==============================
-# SCORE V4.7 PRO MELHORADO
+# SCORE V4.8 ELITE
 # ==============================
 
-def calcular_score(home, away):
+def calcular_score(home_id, away_id):
 
-    form_home = get_form(home)
-    form_away = get_form(away)
+    form_home = get_team_form(home_id)
+    form_away = get_team_form(away_id)
 
+    # diferença de forma
     score = (form_home - form_away)
 
-    # ajuste casa
-    score += 0.25
+    # peso maior (agora é dado real)
+    score *= 1.5
+
+    # fator casa mais inteligente
+    score += 0.20
 
     return score
 
 def filtro(score):
-    return score >= 0.55
+    return score >= 0.30  # mais sensível agora
 
 # ==============================
 # PROCESSAMENTO
@@ -94,14 +120,14 @@ st.write(f"🔎 Jogos encontrados: {len(matches)}")
 resultados = []
 
 for m in matches:
-    score = calcular_score(m["home"], m["away"])
+    score = calcular_score(m["home_id"], m["away_id"])
 
     if filtro(score):
         resultados.append({
             "Jogo": f"{m['home']} vs {m['away']}",
             "Score": round(score, 2),
-            "Pick": "Casa",
-            "Confiança": "Alta" if score >= 0.75 else "Média"
+            "Pick": "Casa" if score > 0 else "Visitante",
+            "Confiança": "Alta" if score >= 0.6 else "Média"
         })
 
 df = pd.DataFrame(resultados)
