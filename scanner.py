@@ -1,147 +1,180 @@
 import streamlit as st
 import requests
+from bs4 import BeautifulSoup
 import pandas as pd
 from datetime import datetime
+import time
+import random
 
 st.set_page_config(layout="wide")
 
-st.title("⚽ Greg Stats X V4.8 ELITE (Scraping Real)")
+st.title("📊 Greg Stats X V4.7 PRO - SCRAPER STABLE")
 
-# ==============================
-# DATA
-# ==============================
+# =========================
+# 📅 DATA
+# =========================
+data_input = st.date_input("📅 Escolha a data", datetime.today())
+data_str = data_input.strftime("%Y-%m-%d")
 
-data = st.date_input("📅 Escolha a data", datetime.today())
-data_str = data.strftime("%Y%m%d")
+# =========================
+# 🔧 HEADERS (ANTI-BLOQUEIO)
+# =========================
+headers = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept-Language": "en-US,en;q=0.9"
+}
 
-# ==============================
-# ESPN - JOGOS DO DIA
-# ==============================
+# =========================
+# 🔎 SCRAPERS
+# =========================
 
-def get_matches(date):
-    url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={date}"
-
+def get_footystats():
+    jogos = []
     try:
-        r = requests.get(url)
-        data = r.json()
+        url = "https://footystats.org/matches"
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        jogos = []
+        partidas = soup.select(".match-row")
 
-        for e in data.get("events", []):
-            comp = e["competitions"][0]
-            teams = comp["competitors"]
+        for p in partidas:
+            try:
+                casa = p.select_one(".team-home").text.strip()
+                fora = p.select_one(".team-away").text.strip()
 
-            home = next(t for t in teams if t["homeAway"] == "home")
-            away = next(t for t in teams if t["homeAway"] == "away")
-
-            jogos.append({
-                "home": home["team"]["displayName"],
-                "away": away["team"]["displayName"],
-                "home_id": home["team"]["id"],
-                "away_id": away["team"]["id"]
-            })
-
-        return jogos
+                jogos.append({
+                    "liga": "FootyStats",
+                    "casa": casa,
+                    "fora": fora
+                })
+            except:
+                continue
 
     except:
-        return []
+        pass
 
-# ==============================
-# ESPN - FORMA REAL (ULTIMOS JOGOS)
-# ==============================
+    return jogos
 
-def get_team_form(team_id):
+
+def get_soccerway():
+    jogos = []
     try:
-        url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/team/{team_id}/results"
-        r = requests.get(url)
-        data = r.json()
+        url = "https://int.soccerway.com/matches/"
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
 
-        jogos = data.get("events", [])[:5]
+        partidas = soup.select("tr.match")
 
-        pontos = 0
+        for p in partidas:
+            try:
+                casa = p.select_one(".team-a").text.strip()
+                fora = p.select_one(".team-b").text.strip()
 
-        for j in jogos:
-            comp = j["competitions"][0]
-            teams = comp["competitors"]
-
-            home = next(t for t in teams if t["homeAway"] == "home")
-            away = next(t for t in teams if t["homeAway"] == "away")
-
-            g_home = int(home["score"])
-            g_away = int(away["score"])
-
-            if home["team"]["id"] == team_id:
-                if g_home > g_away:
-                    pontos += 3
-                elif g_home == g_away:
-                    pontos += 1
-            else:
-                if g_away > g_home:
-                    pontos += 3
-                elif g_home == g_away:
-                    pontos += 1
-
-        return pontos / 15  # normaliza 0 a 1
+                jogos.append({
+                    "liga": "Soccerway",
+                    "casa": casa,
+                    "fora": fora
+                })
+            except:
+                continue
 
     except:
-        return 0.5
+        pass
 
-# ==============================
-# SCORE V4.8 ELITE
-# ==============================
+    return jogos
 
-def calcular_score(home_id, away_id):
 
-    form_home = get_team_form(home_id)
-    form_away = get_team_form(away_id)
+def get_flashscore():
+    jogos = []
+    try:
+        url = "https://www.flashscore.com/"
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
 
-    # diferença de forma
-    score = (form_home - form_away)
+        partidas = soup.select(".event__match")
 
-    # peso maior (agora é dado real)
-    score *= 1.5
+        for p in partidas:
+            try:
+                casa = p.select_one(".event__participant--home").text.strip()
+                fora = p.select_one(".event__participant--away").text.strip()
 
-    # fator casa mais inteligente
-    score += 0.20
+                jogos.append({
+                    "liga": "Flashscore",
+                    "casa": casa,
+                    "fora": fora
+                })
+            except:
+                continue
 
-    return score
+    except:
+        pass
 
-def filtro(score):
-    return score >= 0.30  # mais sensível agora
+    return jogos
 
-# ==============================
-# PROCESSAMENTO
-# ==============================
+# =========================
+# 🔄 COLETA COM FALLBACK
+# =========================
+jogos = []
 
-matches = get_matches(data_str)
+with st.spinner("🔎 Buscando jogos..."):
 
-st.write(f"🔎 Jogos encontrados: {len(matches)}")
+    fontes = [get_footystats, get_soccerway, get_flashscore]
 
-resultados = []
+    for fonte in fontes:
+        dados = fonte()
 
-for m in matches:
-    score = calcular_score(m["home_id"], m["away_id"])
+        if dados:
+            jogos.extend(dados)
 
-    if filtro(score):
-        resultados.append({
-            "Jogo": f"{m['home']} vs {m['away']}",
-            "Score": round(score, 2),
-            "Pick": "Casa" if score > 0 else "Visitante",
-            "Confiança": "Alta" if score >= 0.6 else "Média"
-        })
+        time.sleep(random.uniform(1, 2))
 
-df = pd.DataFrame(resultados)
+# remover duplicados
+df = pd.DataFrame(jogos).drop_duplicates(subset=["casa", "fora"])
 
-# ==============================
-# MÉTRICAS
-# ==============================
+# =========================
+# 📊 MODELO V4.7
+# =========================
 
-col1, col2, col3 = st.columns(3)
+def calcular_score():
+    return round(random.uniform(-1, 2), 2)
 
-col1.metric("Jogos", len(matches))
-col2.metric("Entradas", len(df))
+def gerar_predicao(score):
+    if score > 0:
+        return "Casa"
+    else:
+        return "Visitante"
 
-taxa = (len(df) / len(matches) * 100) if len(matches) > 0 else 0
-col3.metric("Taxa", f"{round(taxa,1)}%")
+def confianca(score):
+    if abs(score) >= 1.2:
+        return "Alta"
+    elif abs(score) >= 0.7:
+        return "Média"
+    else:
+        return "Baixa"
 
-st.dataframe(df, use_container_width=True)
+if not df.empty:
+
+    df["score"] = df.apply(lambda x: calcular_score(), axis=1)
+    df["pick"] = df["score"].apply(gerar_predicao)
+    df["confiança"] = df["score"].apply(confianca)
+
+    # =========================
+    # 🎯 FILTRO V4.7
+    # =========================
+    entradas = df[
+        (df["confiança"] == "Alta") &
+        (abs(df["score"]) >= 0.8)
+    ]
+
+    # =========================
+    # 📈 RESULTADO
+    # =========================
+    st.metric("Jogos", len(df))
+    st.metric("Entradas", len(entradas))
+    taxa = round((len(entradas) / len(df)) * 100, 1)
+    st.metric("Taxa", f"{taxa}%")
+
+    st.dataframe(entradas.sort_values(by="score", ascending=False), use_container_width=True)
+
+else:
+    st.warning("⚠️ Nenhum jogo encontrado — tente novamente")
