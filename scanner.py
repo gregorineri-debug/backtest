@@ -1,136 +1,169 @@
 import streamlit as st
-import requests
 import pandas as pd
+import numpy as np
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime
 
-st.set_page_config(page_title="Scanner PRO V3", layout="wide")
+# =========================
+# CONFIG
+# =========================
+st.set_page_config(page_title="xG Betting Model", layout="wide")
 
-st.title("📊 Scanner PRO V3 (Jogos + Odds + Ranking)")
+st.title("📊 xG Betting Model - Scraping Mode")
 
-# ==============================
-# CONFIG API
-# ==============================
+# =========================
+# DATA SELECTION
+# =========================
+date = st.date_input("Selecione a data dos jogos")
 
-API_KEY = "SUA_API_KEY_AQUI"
+st.write(f"Data selecionada: {date}")
 
-HEADERS = {
-    "x-apisports-key": API_KEY
-}
-
-# ==============================
-# BUSCAR JOGOS DO DIA
-# ==============================
-
-def get_matches(date):
-    url = f"https://v3.football.api-sports.io/fixtures?date={date}"
-    res = requests.get(url, headers=HEADERS)
-    data = res.json()
-
-    matches = []
-
-    for item in data["response"]:
-        matches.append({
-            "fixture_id": item["fixture"]["id"],
-            "home": item["teams"]["home"]["name"],
-            "away": item["teams"]["away"]["name"],
-            "league": item["league"]["name"]
-        })
-
-    return matches
-
-# ==============================
-# BUSCAR ODDS REAIS
-# ==============================
-
-def get_odds(fixture_id):
-    url = f"https://v3.football.api-sports.io/odds?fixture={fixture_id}"
-    res = requests.get(url, headers=HEADERS)
-    data = res.json()
+# =========================
+# SCRAPING FBREF
+# =========================
+def get_fbref_team_stats(team_url, n_matches=10):
+    """
+    Extrai dados de xG do FBref
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
 
     try:
-        bets = data["response"][0]["bookmakers"][0]["bets"]
+        res = requests.get(team_url, headers=headers)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-        for bet in bets:
-            if bet["name"] == "Match Winner":
-                odds = bet["values"]
-                return {
-                    "home": float(odds[0]["odd"]),
-                    "draw": float(odds[1]["odd"]),
-                    "away": float(odds[2]["odd"])
-                }
+        table = soup.find("table", {"id": "matchlogs_for"})
+        if table is None:
+            return pd.DataFrame()
+
+        df = pd.read_html(str(table))[0]
+
+        # Filtrar jogos mais recentes
+        df = df.head(n_matches)
+
+        # Ajuste de colunas (depende da liga)
+        df = df[["xG", "xGA"]].dropna()
+
+        return df
+
+    except Exception as e:
+        st.error(f"Erro ao buscar dados: {e}")
+        return pd.DataFrame()
+
+
+# =========================
+# SCRAPING SOFASCORE (ESTRUTURA)
+# =========================
+def get_sofascore_data(team_id):
+    """
+    Estrutura base — SofaScore precisa de Selenium ou API interna
+    """
+    url = f"https://www.sofascore.com/api/v1/team/{team_id}/performance"
+
+    try:
+        res = requests.get(url)
+        data = res.json()
+
+        df = pd.DataFrame(data["events"])
+
+        return df
+
     except:
-        return None
+        return pd.DataFrame()
 
-# ==============================
-# MODELO xG SIMPLIFICADO
-# ==============================
 
-def calculate_strength():
-    # MOCK inteligente (substituível depois por xG real)
-    import random
-    return random.uniform(-1, 1)
+# =========================
+# CÁLCULO DE FORÇA
+# =========================
+def calculate_strength(df):
+    if df.empty:
+        return 1.2, 1.2  # fallback
 
-# ==============================
-# INPUT DATA
-# ==============================
+    attack = df["xG"].mean()
+    defense = df["xGA"].mean()
 
-date = st.text_input("📅 Data (YYYY-MM-DD)", datetime.today().strftime("%Y-%m-%d"))
+    return attack, defense
 
-# ==============================
-# EXECUÇÃO
-# ==============================
 
-if st.button("🚀 Rodar Scanner"):
+# =========================
+# PREVISÃO
+# =========================
+def predict_match(home, away, df_home, df_away):
+    home_attack, home_defense = calculate_strength(df_home)
+    away_attack, away_defense = calculate_strength(df_away)
 
-    matches = get_matches(date)
+    home_xg = (home_attack + away_defense) / 2
+    away_xg = (away_attack + home_defense) / 2
 
-    results = []
+    total_xg = home_xg + away_xg
 
-    for match in matches:
+    prob_home = home_xg / total_xg
+    prob_away = away_xg / total_xg
 
-        odds = get_odds(match["fixture_id"])
-
-        if not odds:
-            continue
-
-        # Modelo (placeholder xG)
-        home_score = calculate_strength()
-        away_score = calculate_strength()
-
-        total = abs(home_score) + abs(away_score)
-
-        if total == 0:
-            continue
-
-        prob_home = abs(home_score) / total
-        prob_away = abs(away_score) / total
-
-        ev_home = (prob_home * odds["home"]) - 1
-        ev_away = (prob_away * odds["away"]) - 1
-
-        best_ev = max(ev_home, ev_away)
-
-        results.append({
-            "Jogo": f"{match['home']} x {match['away']}",
-            "Liga": match["league"],
-            "Odd Casa": odds["home"],
-            "Odd Visitante": odds["away"],
-            "EV Casa": round(ev_home, 2),
-            "EV Visitante": round(ev_away, 2),
-            "Melhor EV": round(best_ev, 2),
-            "Sugestão": "Casa" if ev_home > ev_away else "Visitante"
-        })
-
-    if results:
-
-        df = pd.DataFrame(results)
-
-        # Ranking automático
-        df = df.sort_values(by="Melhor EV", ascending=False)
-
-        st.success(f"{len(df)} jogos analisados")
-
-        st.dataframe(df)
-
+    if prob_home > 0.55:
+        pick_victory = f"🏠 {home}"
+    elif prob_away > 0.55:
+        pick_victory = f"✈️ {away}"
     else:
-        st.warning("Nenhum jogo encontrado")
+        pick_victory = "⚖️ No Bet"
+
+    if total_xg > 2.5:
+        pick_goals = "Over 2.5"
+    else:
+        pick_goals = "Under 2.5"
+
+    return {
+        "xG Casa": round(home_xg, 2),
+        "xG Fora": round(away_xg, 2),
+        "Total xG": round(total_xg, 2),
+        "Pick Vitória": pick_victory,
+        "Pick Gols": pick_goals
+    }
+
+
+# =========================
+# EXEMPLO DE LINKS FBREF
+# =========================
+# ⚠️ Você precisa substituir pelos links reais dos times
+team_urls = {
+    "Team A": "https://fbref.com/en/squads/xxxxxxxx/Team-A-Stats",
+    "Team B": "https://fbref.com/en/squads/yyyyyyyy/Team-B-Stats",
+}
+
+games = [
+    ("Team A", "Team B"),
+]
+
+results = []
+
+# =========================
+# LOOP
+# =========================
+for home, away in games:
+
+    scenarios = {
+        "10 jogos": 10,
+        "5 jogos": 5,
+    }
+
+    row = {"Jogo": f"{home} vs {away}"}
+
+    for scenario, n in scenarios.items():
+
+        df_home = get_fbref_team_stats(team_urls[home], n)
+        df_away = get_fbref_team_stats(team_urls[away], n)
+
+        pred = predict_match(home, away, df_home, df_away)
+
+        row[f"{scenario} - Vitória"] = pred["Pick Vitória"]
+        row[f"{scenario} - Gols"] = pred["Pick Gols"]
+
+    results.append(row)
+
+df_results = pd.DataFrame(results)
+
+st.subheader("📋 Resultado das Análises")
+
+st.dataframe(df_results, use_container_width=True)
