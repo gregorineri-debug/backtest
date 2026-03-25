@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 tz = pytz.timezone("America/Sao_Paulo")
 now = datetime.now(tz)
 
-st.set_page_config(page_title="xG Multi Scenario Model", layout="wide")
+st.set_page_config(page_title="xG Multi Scenario", layout="wide")
 st.title("📊 xG Multi Scenario Model")
 
 st.write(f"🕒 São Paulo: {now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -23,7 +23,7 @@ st.write(f"🕒 São Paulo: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 date = st.date_input("Selecione a data")
 
 # =========================
-# BUSCAR JOGOS
+# JOGOS DO DIA (SOFASCORE)
 # =========================
 def get_matches_by_date(date):
 
@@ -34,11 +34,9 @@ def get_matches_by_date(date):
         res = requests.get(url)
         data = res.json()
 
-        events = data.get("events", [])
-
         games = []
 
-        for e in events:
+        for e in data.get("events", []):
             try:
                 games.append({
                     "home": e["homeTeam"]["name"],
@@ -53,7 +51,7 @@ def get_matches_by_date(date):
         return []
 
 # =========================
-# FBREF xG REAL
+# FBREF (xG REAL)
 # =========================
 def get_fbref_xg(team_name, n_games=10):
 
@@ -62,18 +60,21 @@ def get_fbref_xg(team_name, n_games=10):
         res = requests.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
         soup = BeautifulSoup(res.text, "html.parser")
 
-        link = soup.find("a", href=True)
+        links = soup.find_all("a", href=True)
 
-        if not link:
+        team_link = None
+        for l in links:
+            if "/squads/" in l["href"]:
+                team_link = "https://fbref.com" + l["href"]
+                break
+
+        if not team_link:
             return pd.DataFrame()
 
-        team_url = "https://fbref.com" + link["href"]
-
-        res = requests.get(team_url)
+        res = requests.get(team_link)
         soup = BeautifulSoup(res.text, "html.parser")
 
         table = soup.find("table", {"id": "matchlogs_for"})
-
         if table is None:
             return pd.DataFrame()
 
@@ -90,7 +91,7 @@ def get_fbref_xg(team_name, n_games=10):
         return pd.DataFrame()
 
 # =========================
-# FILTRO HOME/AWAY
+# FILTRO CASA/FORA
 # =========================
 def filter_home_away(df, venue):
     if df.empty:
@@ -103,7 +104,7 @@ def filter_home_away(df, venue):
 def predict(df_home, df_away):
 
     if df_home.empty or df_away.empty:
-        return "Sem dados", "Sem dados"
+        return None, None
 
     home_xg = df_home["xG"].mean()
     away_xg = df_away["xG"].mean()
@@ -117,7 +118,7 @@ def predict(df_home, df_away):
     total = home_score + away_score
 
     if total == 0:
-        return "Sem dados", "Sem dados"
+        return None, None
 
     prob_home = home_score / total
     prob_away = away_score / total
@@ -138,9 +139,6 @@ def predict(df_home, df_away):
 # =========================
 games = get_matches_by_date(date)
 
-if len(games) == 0:
-    st.warning("Nenhum jogo encontrado")
-
 results = []
 
 for g in games:
@@ -151,10 +149,17 @@ for g in games:
     df_home_10 = get_fbref_xg(home, 10)
     df_away_10 = get_fbref_xg(away, 10)
 
-    df_home_5 = get_fbref_xg(home, 5)
-    df_away_5 = get_fbref_xg(away, 5)
+    # 🔥 FILTRO DE QUALIDADE
+    if df_home_10.empty or df_away_10.empty:
+        continue
 
-    # HOME/AWAY
+    if len(df_home_10) < 3 or len(df_away_10) < 3:
+        continue
+
+    df_home_5 = df_home_10.head(5)
+    df_away_5 = df_away_10.head(5)
+
+    # HOME / AWAY
     df_home_home_10 = filter_home_away(df_home_10, "Home")
     df_away_away_10 = filter_home_away(df_away_10, "Away")
 
@@ -163,7 +168,9 @@ for g in games:
 
     row = {"Jogo": f"{home} vs {away}"}
 
+    # =========================
     # CENÁRIOS
+    # =========================
     row["10 Geral - Vitória"], row["10 Geral - Gols"] = predict(df_home_10, df_away_10)
     row["5 Geral - Vitória"], row["5 Geral - Gols"] = predict(df_home_5, df_away_5)
 
@@ -172,8 +179,13 @@ for g in games:
 
     results.append(row)
 
+# =========================
+# OUTPUT
+# =========================
 df = pd.DataFrame(results)
 
-st.subheader("📋 Resultado Completo")
-
-st.dataframe(df, use_container_width=True)
+if df.empty:
+    st.warning("Nenhum jogo com dados suficientes encontrado")
+else:
+    st.subheader("📋 Resultado Completo")
+    st.dataframe(df, use_container_width=True)
