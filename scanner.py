@@ -5,79 +5,63 @@ from datetime import datetime
 
 st.set_page_config(layout="wide")
 
-# ==============================
-# CONFIG
-# ==============================
-
-API_KEY = "COLE_SUA_CHAVE_AQUI"
-
-HEADERS = {
-    "X-RapidAPI-Key": API_KEY,
-    "X-RapidAPI-Host": "api-football-v1.p.rapidapi.com"
-}
-
-URL = "https://api-football-v1.p.rapidapi.com/v3/fixtures"
+st.title("⚽ Greg Stats X V4.7 PRO (Dados Reais)")
 
 # ==============================
-# BUSCAR JOGOS
+# DATA
+# ==============================
+
+data = st.date_input("📅 Escolha a data", datetime.today())
+data_str = data.strftime("%Y%m%d")
+
+# ==============================
+# BUSCAR JOGOS (ESPN)
 # ==============================
 
 def get_matches(date):
+    url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard?dates={date}"
+
     try:
-        response = requests.get(URL, headers=HEADERS, params={"date": date})
+        r = requests.get(url)
+        data = r.json()
 
-        # DEBUG
-        if response.status_code != 200:
-            st.error(f"Erro API: {response.status_code}")
-            st.text(response.text)
-            return []
+        eventos = data.get("events", [])
+        jogos = []
 
-        data = response.json()
+        for e in eventos:
+            comp = e["competitions"][0]
+            teams = comp["competitors"]
 
-        if "response" not in data:
-            st.error("Resposta inválida da API")
-            st.json(data)
-            return []
+            home = next(t for t in teams if t["homeAway"] == "home")
+            away = next(t for t in teams if t["homeAway"] == "away")
 
-        return data["response"]
+            jogos.append({
+                "home": home["team"]["displayName"],
+                "away": away["team"]["displayName"],
+                "g_home": int(home.get("score", 0)),
+                "g_away": int(away.get("score", 0))
+            })
+
+        return jogos
 
     except Exception as e:
-        st.error(f"Erro geral: {e}")
+        st.error(f"Erro ao buscar dados: {e}")
         return []
 
 # ==============================
-# SCORE V4.7 SIMPLES
+# SCORE V4.7
 # ==============================
 
-def calcular_score(match):
-    try:
-        goals_home = match["goals"]["home"]
-        goals_away = match["goals"]["away"]
-
-        if goals_home is None or goals_away is None:
-            return 0
-
-        score = (goals_home - goals_away) * 0.6 + 0.25
-        return score
-
-    except:
-        return 0
-
-# ==============================
-# FILTRO
-# ==============================
+def calcular_score(jogo):
+    score = (jogo["g_home"] - jogo["g_away"]) * 0.6 + 0.25
+    return score
 
 def filtro(score):
     return score >= 0.55
 
 # ==============================
-# APP
+# PROCESSAMENTO
 # ==============================
-
-st.title("⚽ Greg Stats X V4.7 PRO")
-
-data = st.date_input("📅 Escolha a data", datetime.today())
-data_str = data.strftime("%Y-%m-%d")
 
 matches = get_matches(data_str)
 
@@ -90,12 +74,17 @@ for m in matches:
 
     if filtro(score):
         resultados.append({
-            "Jogo": f"{m['teams']['home']['name']} vs {m['teams']['away']['name']}",
+            "Jogo": f"{m['home']} vs {m['away']}",
             "Score": round(score, 2),
-            "Pick": "Casa"
+            "Pick": "Casa",
+            "Confiança": "Alta" if score >= 0.75 else "Média"
         })
 
 df = pd.DataFrame(resultados)
+
+# ==============================
+# MÉTRICAS
+# ==============================
 
 col1, col2, col3 = st.columns(3)
 
