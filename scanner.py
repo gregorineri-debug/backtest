@@ -28,9 +28,9 @@ date = st.date_input("Selecione a data")
 def get_matches_by_date(date):
 
     try:
-        timestamp = int(datetime(date.year, date.month, date.day).timestamp())
+        formatted_date = date.strftime("%Y-%m-%d")
 
-        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{timestamp}"
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{formatted_date}"
         res = requests.get(url)
         data = res.json()
 
@@ -51,7 +51,8 @@ def get_matches_by_date(date):
 
         return games
 
-    except:
+    except Exception as e:
+        st.error(f"Erro ao buscar jogos: {e}")
         return []
 
 # =========================
