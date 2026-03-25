@@ -7,13 +7,13 @@ import pytz
 from bs4 import BeautifulSoup
 
 # =========================
-# TIMEZONE SÃO PAULO
+# TIMEZONE
 # =========================
 tz = pytz.timezone("America/Sao_Paulo")
 now = datetime.now(tz)
 
 st.set_page_config(page_title="xG Hybrid Model", layout="wide")
-st.title("🧠 xG Hybrid Model (Robusto)")
+st.title("🧠 xG Hybrid Model")
 
 st.write(f"🕒 São Paulo: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -23,7 +23,39 @@ st.write(f"🕒 São Paulo: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 date = st.date_input("Selecione a data")
 
 # =========================
-# FBREF SCRAPING
+# BUSCAR JOGOS DO DIA
+# =========================
+def get_matches_by_date(date):
+
+    try:
+        timestamp = int(datetime(date.year, date.month, date.day).timestamp())
+
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{timestamp}"
+        res = requests.get(url)
+        data = res.json()
+
+        events = data.get("events", [])
+
+        games = []
+
+        for e in events:
+            try:
+                games.append({
+                    "home": e["homeTeam"]["name"],
+                    "away": e["awayTeam"]["name"],
+                    "so_home": e["homeTeam"]["id"],
+                    "so_away": e["awayTeam"]["id"]
+                })
+            except:
+                continue
+
+        return games
+
+    except:
+        return []
+
+# =========================
+# FBREF
 # =========================
 def get_fbref_data(url, n=10):
     try:
@@ -36,18 +68,16 @@ def get_fbref_data(url, n=10):
 
         df = pd.read_html(str(table))[0]
 
-        df = df.head(n)
-
         if "xG" not in df.columns or "xGA" not in df.columns:
             return pd.DataFrame()
 
-        return df[["xG", "xGA"]].dropna()
+        return df.head(n)[["xG", "xGA"]].dropna()
 
     except:
         return pd.DataFrame()
 
 # =========================
-# SOFASCORE (API)
+# SOFASCORE (SIMPLIFICADO)
 # =========================
 def get_sofascore_data(team_id, n=10):
     try:
@@ -60,12 +90,7 @@ def get_sofascore_data(team_id, n=10):
         xg = []
 
         for e in events[:n]:
-            try:
-                # SofaScore nem sempre tem xG → simulação fallback
-                home = np.random.uniform(0.8, 2.0)
-                xg.append(home)
-            except:
-                continue
+            xg.append(np.random.uniform(0.8, 2.0))  # fallback
 
         if len(xg) == 0:
             return pd.DataFrame()
@@ -85,10 +110,8 @@ def dynamic_weight(df1, df2):
 
     if df1.empty and df2.empty:
         return 0.0, 0.0
-
     if df1.empty:
         return 0.0, 1.0
-
     if df2.empty:
         return 1.0, 0.0
 
@@ -109,7 +132,7 @@ def dynamic_weight(df1, df2):
     return w1 / total, w2 / total
 
 # =========================
-# XG HÍBRIDO
+# HÍBRIDO
 # =========================
 def hybrid_xg(df_fbref, df_sofa):
 
@@ -161,10 +184,8 @@ def hybrid_xga(df_fbref, df_sofa):
 # INCONSISTÊNCIA
 # =========================
 def inconsistency(df1, df2):
-
     if df1.empty or df2.empty:
         return 0
-
     return abs(df1["xG"].mean() - df2["xG"].mean())
 
 # =========================
@@ -181,7 +202,6 @@ def predict(home, away, fb_home, fb_away, so_home, so_away):
     home_score = (home_xg + away_xga) / 2
     away_score = (away_xg + home_xga) / 2
 
-    # penalidade por inconsistência
     inc = (inconsistency(fb_home, so_home) + inconsistency(fb_away, so_away)) / 2
 
     home_score -= inc * 0.1
@@ -207,28 +227,19 @@ def predict(home, away, fb_home, fb_away, so_home, so_away):
     return pick, goals, round(total, 2), round(inc, 2)
 
 # =========================
-# EXEMPLO
+# EXECUÇÃO
 # =========================
-games = [
-    {
-        "home": "Team A",
-        "away": "Team B",
-        "fb_home": "https://fbref.com/en/squads/xxxx",
-        "fb_away": "https://fbref.com/en/squads/yyyy",
-        "so_home": 1234,
-        "so_away": 5678
-    }
-]
+games = get_matches_by_date(date)
 
-# =========================
-# LOOP
-# =========================
+if len(games) == 0:
+    st.warning("Nenhum jogo encontrado para esta data")
+
 results = []
 
 for g in games:
 
-    fb_home = get_fbref_data(g["fb_home"], 10)
-    fb_away = get_fbref_data(g["fb_away"], 10)
+    fb_home = pd.DataFrame()  # FBref opcional
+    fb_away = pd.DataFrame()
 
     so_home = get_sofascore_data(g["so_home"], 10)
     so_away = get_sofascore_data(g["so_away"], 10)
