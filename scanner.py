@@ -4,7 +4,7 @@ import numpy as np
 import requests
 from datetime import datetime
 import pytz
-from bs4 import BeautifulSoup4
+from bs4 import beautifulsoup4
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
