@@ -145,12 +145,16 @@ def final_pick(picks):
     casa = picks.count("🏠 Casa")
     fora = picks.count("✈️ Visitante")
 
-    if casa >= 3:
-        return "🔥 Casa Forte"
-    elif fora >= 3:
-        return "🔥 Visitante Forte"
+    max_val = max(casa, fora)
+
+    if max_val == 4:
+        return "🔥🔥 MUITO FORTE"
+    elif max_val == 3:
+        return "🔥 FORTE"
+    elif max_val == 2:
+        return "⚠️ MÉDIO"
     else:
-        return "⚖️ Equilibrado"
+        return "❌ DESCARTAR"
 
 # =========================
 # EXECUÇÃO
