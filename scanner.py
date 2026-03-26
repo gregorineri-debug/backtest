@@ -1,16 +1,12 @@
-# BACKTEST PROFISSIONAL DE FUTEBOL (V3.1 - BASE TEMPORAL CORRIGIDA)
-# Autor: ChatGPT
-# Streamlit + Pandas + Football-data.co.uk
-# Interface MANTIDA - apenas lógica interna ajustada (sem vazamento de dados)
+# BACKTEST PROFISSIONAL DE FUTEBOL (V3.3 - FORMA RECENTE)
 
 import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 # ------------------------------
-# CONFIGURAÇÃO DE LIGAS
+# LIGAS
 # ------------------------------
 LEAGUES = {
     "E0": "England Premier League",
@@ -26,20 +22,16 @@ LEAGUES = {
     "I1": "Italy Serie A",
     "I2": "Italy Serie B",
     "P1": "Portugal Primeira Liga",
-    "P2": "Portugal Segunda Liga",
-    "N1": "Netherlands Eredivisie",
-    "B1": "Belgium Pro League",
-    "SC0": "Scotland Premiership"
+    "P2": "Portugal Segunda Liga"
 }
 
 # ------------------------------
 # DATA LOADER
 # ------------------------------
-
-def generate_seasons(last_years=6):
+def generate_seasons(n=6):
     seasons = []
     current_year = datetime.now().year
-    for i in range(last_years):
+    for i in range(n):
         y1 = (current_year - i) % 100
         y2 = (current_year - i + 1) % 100
         seasons.append(f"{y1:02d}{y2:02d}")
@@ -51,7 +43,7 @@ def load_league(season, code):
     try:
         df = pd.read_csv(url)
         df["League"] = LEAGUES.get(code, code)
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
+        df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
         df["Season"] = season
         return df
     except:
@@ -60,15 +52,13 @@ def load_league(season, code):
 
 def load_all_data():
     frames = []
-    seasons = generate_seasons(6)
-
-    for season in seasons:
+    for season in generate_seasons():
         for code in LEAGUES.keys():
             df = load_league(season, code)
             if not df.empty:
                 frames.append(df)
 
-    if len(frames) == 0:
+    if not frames:
         return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
@@ -76,75 +66,70 @@ def load_all_data():
     df = df.sort_values("Date")
     return df
 
-# ------------------------------
-# FILTER BY DATE (SAO PAULO)
-# ------------------------------
 
-def filter_by_date(df, selected_date):
-    df = df.copy()
-
-    tz = ZoneInfo("America/Sao_Paulo")
+# ------------------------------
+# FILTRO DATA
+# ------------------------------
+def filter_day(df, selected_date):
     start = datetime.combine(selected_date, datetime.min.time())
     end = datetime.combine(selected_date, datetime.max.time())
+    return df[(df["Date"] >= start) & (df["Date"] <= end)]
 
-    mask = (df["Date"] >= start) & (df["Date"] <= end)
-    return df.loc[mask].copy()
 
 # ------------------------------
-# FEATURE ENGINE (APENAS PASSADO)
+# FORMA RECENTE (PESADA)
 # ------------------------------
+def compute_team_form(df, team, last_n=10):
 
-def compute_team_form(history_df, team):
-    # 🔒 Correção: garantir estrutura mesmo se vazio
-    if history_df is None or history_df.empty:
+    if df.empty:
         return 0.0, 0.0
 
-    required_cols = {"HomeTeam", "AwayTeam", "FTHG", "FTAG"}
-    if not required_cols.issubset(history_df.columns):
+    games = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)]
+    games = games.sort_values("Date").tail(last_n)
+
+    if games.empty:
         return 0.0, 0.0
 
-    team_games = history_df[(history_df["HomeTeam"] == team) | (history_df["AwayTeam"] == team)]
+    weights = np.linspace(0.3, 1.0, len(games))  # crescente
+    weights = weights / weights.sum()
 
-    if team_games.empty:
-        return 0.0, 0.0
+    scored = []
+    conceded = []
 
-    goals_scored = []
-    goals_conceded = []
-
-    for _, r in team_games.iterrows():
+    for _, r in games.iterrows():
         if r["HomeTeam"] == team:
-            goals_scored.append(r.get("FTHG", 0))
-            goals_conceded.append(r.get("FTAG", 0))
+            scored.append(r["FTHG"])
+            conceded.append(r["FTAG"])
         else:
-            goals_scored.append(r.get("FTAG", 0))
-            goals_conceded.append(r.get("FTHG", 0))
+            scored.append(r["FTAG"])
+            conceded.append(r["FTHG"])
 
-    if len(goals_scored) == 0:
-        return 0.0, 0.0
+    scored = np.array(scored)
+    conceded = np.array(conceded)
 
-    return float(np.mean(goals_scored)), float(np.mean(goals_conceded))
+    return np.sum(scored * weights), np.sum(conceded * weights)
+
 
 # ------------------------------
-# CORE MODEL
+# MODELO
 # ------------------------------
-
 def win_probability(home_score, away_score):
     diff = home_score - away_score
     return 1 / (1 + np.exp(-diff))
 
 
-def calculate_score(home_avg_for, home_avg_against, away_avg_for, away_avg_against):
-    home_score = home_avg_for - away_avg_against
-    away_score = away_avg_for - home_avg_against
-    return home_score, away_score
+def calculate_score(h_for, h_against, a_for, a_against):
+    home = h_for - a_against
+    away = a_for - h_against
+    return home, away
+
 
 # ------------------------------
-# MARKET MODELS (BASEADO EM HISTÓRICO)
+# MERCADOS
 # ------------------------------
-
-def goals_market(home_avg_for, away_avg_for):
-    est = home_avg_for + away_avg_for
-    return "OVER 2.5" if est > 2.5 else "UNDER 2.5"
+def goals_market(h_for, a_for):
+    total = h_for + a_for
+    return "OVER 2.5" if total > 2.5 else "UNDER 2.5"
 
 
 def corners_market(home_score, away_score):
@@ -156,40 +141,35 @@ def cards_market(home_score, away_score):
     est = (3 - abs(home_score - away_score)) + 2
     return "OVER 4.5" if est > 4.5 else "UNDER 4.5"
 
-# ------------------------------
-# BACKTEST ENGINE (SEM DATA LEAKAGE)
-# ------------------------------
 
-def backtest(df):
+# ------------------------------
+# BACKTEST
+# ------------------------------
+def run_model(df_day, df_history):
+
     results = []
 
-    # 🔒 Correção: inicializa histórico com colunas corretas
-    history = pd.DataFrame(columns=df.columns)
-
-    df = df.sort_values("Date")
-
-    for _, row in df.iterrows():
+    for _, row in df_day.iterrows():
 
         home = row["HomeTeam"]
         away = row["AwayTeam"]
 
-        # SOMENTE PASSADO
-        past = history.copy()
+        home_for, home_against = compute_team_form(df_history, home)
+        away_for, away_against = compute_team_form(df_history, away)
 
-        home_for, home_against = compute_team_form(past, home)
-        away_for, away_against = compute_team_form(past, away)
-
-        home_score, away_score = calculate_score(home_for, home_against, away_for, away_against)
+        home_score, away_score = calculate_score(
+            home_for, home_against,
+            away_for, away_against
+        )
 
         prob_home = win_probability(home_score, away_score)
 
         pred = "HOME" if prob_home > 0.5 else "AWAY"
-        actual = "HOME" if row.get("FTR") == "H" else "AWAY" if row.get("FTR") == "A" else "DRAW"
+        actual = "HOME" if row["FTR"] == "H" else "AWAY" if row["FTR"] == "A" else "DRAW"
 
         results.append({
             "home": home,
             "away": away,
-
             "pred_win": pred,
             "prob_home": round(prob_home * 100, 2),
 
@@ -200,59 +180,44 @@ def backtest(df):
             "actual": actual,
             "correct_win": pred == actual,
 
-            "league": row.get("League"),
-            "season": row.get("Season")
+            "league": row["League"],
+            "season": row["Season"]
         })
-
-        # 🔒 adiciona linha corretamente mantendo estrutura
-        history = pd.concat([history, pd.DataFrame([row])], ignore_index=True)
 
     return pd.DataFrame(results)
 
+
 # ------------------------------
-# STREAMLIT UI (MANTIDO IGUAL)
+# STREAMLIT
 # ------------------------------
+st.title("⚽ Backtest Futebol V3.3 - Forma Recente")
 
-st.title("⚽ Backtest Futebol V3 - Profissional")
+selected_date = st.date_input("Selecione a data")
 
-selected_date = st.date_input("Selecione o dia para análise")
+if st.button("Rodar"):
 
-if st.button("Rodar Backtest"):
+    with st.spinner("Carregando dados..."):
+        df_all = load_all_data()
 
-    with st.spinner("Carregando base histórica..."):
-        df = load_all_data()
-
-    if df.empty:
+    if df_all.empty:
         st.error("Erro ao carregar dados")
         st.stop()
 
-    df = filter_by_date(df, selected_date)
+    df_day = filter_day(df_all, selected_date)
+    df_history = df_all[df_all["Date"] < pd.to_datetime(selected_date)]
 
-    if df.empty:
-        st.warning("Nenhum jogo encontrado")
+    if df_day.empty:
+        st.warning("Sem jogos no dia")
         st.stop()
 
-    results = backtest(df)
+    results = run_model(df_day, df_history)
 
     accuracy = results["correct_win"].mean() * 100
-    st.success(f"Accuracy vitória: {accuracy:.2f}%")
+    st.success(f"Acurácia: {accuracy:.2f}%")
 
     st.dataframe(results)
 
-    results["confidence"] = results["prob_home"].apply(lambda x: abs(x - 50))
+    results["confidence"] = abs(results["prob_home"] - 50)
+
     st.write("🏆 Ranking de Picks")
     st.dataframe(results.sort_values("confidence", ascending=False))
-
-    st.write("Resumo por liga")
-    st.dataframe(results.groupby("league")["correct_win"].mean())
-
-    st.write("Resumo por temporada")
-    st.dataframe(results.groupby("season")["correct_win"].mean())
-
-# ------------------------------
-# FUTURO (V4)
-# ------------------------------
-# xG real
-# corners reais
-# cards por árbitro
-# elo rating
