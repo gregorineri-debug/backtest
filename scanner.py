@@ -1,4 +1,4 @@
-# BACKTEST PROFISSIONAL V4 (PESADO)
+# BACKTEST PROFISSIONAL V4.2 (COM VALIDAÇÃO REAL COMPLETA)
 
 import pandas as pd
 import numpy as np
@@ -57,6 +57,7 @@ def load_all():
             df = load_league(s, c)
             if not df.empty:
                 frames.append(df)
+
     df = pd.concat(frames, ignore_index=True)
     df = df.dropna(subset=["Date"])
     df = df.sort_values("Date")
@@ -73,7 +74,7 @@ def filter_day(df, date):
 
 
 # ------------------------------
-# FORMA (CASA/FORA + PESO)
+# FORMA CASA/FORA
 # ------------------------------
 def team_form(df, team, home=True, n=10):
 
@@ -90,8 +91,7 @@ def team_form(df, team, home=True, n=10):
     weights = np.linspace(0.4, 1.0, len(games))
     weights /= weights.sum()
 
-    gf = []
-    ga = []
+    gf, ga = [], []
 
     for _, r in games.iterrows():
         if home:
@@ -115,15 +115,9 @@ def get_streak(df, team, n=5):
 
     for _, r in games.iterrows():
         if r["HomeTeam"] == team:
-            if r["FTR"] == "H":
-                score += 1
-            elif r["FTR"] == "A":
-                score -= 1
+            score += 1 if r["FTR"] == "H" else -1 if r["FTR"] == "A" else 0
         else:
-            if r["FTR"] == "A":
-                score += 1
-            elif r["FTR"] == "H":
-                score -= 1
+            score += 1 if r["FTR"] == "A" else -1 if r["FTR"] == "H" else 0
 
     return score * 0.2
 
@@ -133,27 +127,26 @@ def get_streak(df, team, n=5):
 # ------------------------------
 def opponent_strength(df, team, n=10):
 
-    games = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)]
-    games = games.tail(n)
+    games = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)].tail(n)
 
-    strength = []
+    vals = []
 
     for _, r in games.iterrows():
         if r["HomeTeam"] == team:
-            strength.append(r["FTAG"])
+            vals.append(r["FTAG"])
         else:
-            strength.append(r["FTHG"])
+            vals.append(r["FTHG"])
 
-    return np.mean(strength) if strength else 0
+    return np.mean(vals) if vals else 0
 
 
 # ------------------------------
-# SCORE FINAL
+# SCORE
 # ------------------------------
 def compute_score(df, home, away):
 
-    h_for, h_against = team_form(df, home, home=True)
-    a_for, a_against = team_form(df, away, home=False)
+    h_for, h_against = team_form(df, home, True)
+    a_for, a_against = team_form(df, away, False)
 
     h_streak = get_streak(df, home)
     a_streak = get_streak(df, away)
@@ -168,26 +161,52 @@ def compute_score(df, home, away):
 
 
 # ------------------------------
-# PROBABILIDADE
+# PROB
 # ------------------------------
-def prob(home, away):
-    diff = home - away
-    return 1 / (1 + np.exp(-diff))
+def prob(h, a):
+    return 1 / (1 + np.exp(-(h - a)))
 
 
 # ------------------------------
-# MERCADOS
+# MERCADOS (PRED)
 # ------------------------------
-def goals(h, a):
-    return "OVER 2.5" if (h + a) > 2.5 else "UNDER 2.5"
+def goals_pred(h, a):
+    return "OVER" if (h + a) > 2.5 else "UNDER"
 
 
-def corners(h, a):
-    return "OVER 10.5" if abs(h - a) * 5 > 10.5 else "UNDER 10.5"
+def corners_pred(h, a):
+    return "OVER" if abs(h - a) * 5 > 10.5 else "UNDER"
 
 
-def cards(h, a):
-    return "OVER 4.5" if (3 - abs(h - a)) + 2 > 4.5 else "UNDER 4.5"
+def cards_pred(h, a):
+    return "OVER" if (3 - abs(h - a)) + 2 > 4.5 else "UNDER"
+
+
+# ------------------------------
+# MERCADOS (REAL)
+# ------------------------------
+def goals_real(row):
+    return "OVER" if (row["FTHG"] + row["FTAG"]) > 2.5 else "UNDER"
+
+
+def corners_real(row):
+    if "HC" in row and "AC" in row:
+        try:
+            total = float(row["HC"]) + float(row["AC"])
+            return "OVER" if total > 10.5 else "UNDER"
+        except:
+            return None
+    return None
+
+
+def cards_real(row):
+    if "HY" in row and "AY" in row:
+        try:
+            total = float(row["HY"]) + float(row["AY"])
+            return "OVER" if total > 4.5 else "UNDER"
+        except:
+            return None
+    return None
 
 
 # ------------------------------
@@ -203,32 +222,44 @@ def run(df_day, history):
         away = r["AwayTeam"]
 
         h, a = compute_score(history, home, away)
-
         p = prob(h, a)
 
         pred = "HOME" if p > 0.5 else "AWAY"
         real = "HOME" if r["FTR"] == "H" else "AWAY" if r["FTR"] == "A" else "DRAW"
 
+        g_pred = goals_pred(h, a)
+        g_real = goals_real(r)
+
+        c_pred = corners_pred(h, a)
+        c_real = corners_real(r)
+
+        ca_pred = cards_pred(h, a)
+        ca_real = cards_real(r)
+
         rows.append({
             "home": home,
             "away": away,
+
             "pred_win": pred,
             "prob_home": round(p * 100, 2),
 
-            "goals_market": goals(h, a),
-            "corners_market": corners(h, a),
-            "cards_market": cards(h, a),
+            "goals_market": g_pred,
+            "corners_market": c_pred,
+            "cards_market": ca_pred,
 
-            "correct": pred == real
+            "correct_win": pred == real,
+            "correct_goals": g_pred == g_real,
+            "correct_corners": (c_pred == c_real) if c_real else None,
+            "correct_cards": (ca_pred == ca_real) if ca_real else None
         })
 
     return pd.DataFrame(rows)
 
 
 # ------------------------------
-# UI (IGUAL)
+# UI (INALTERADA)
 # ------------------------------
-st.title("⚽ Backtest Futebol V4")
+st.title("⚽ Backtest Futebol V4.2")
 
 date = st.date_input("Selecione a data")
 
@@ -245,11 +276,21 @@ if st.button("Rodar"):
 
     res = run(df_day, history)
 
-    acc = res["correct"].mean() * 100
-    st.success(f"Acurácia: {acc:.2f}%")
+    acc_win = res["correct_win"].mean() * 100
+    acc_goals = res["correct_goals"].mean() * 100
+    acc_corners = res["correct_corners"].dropna().mean() * 100
+    acc_cards = res["correct_cards"].dropna().mean() * 100
+
+    st.success(f"""
+    🎯 Win: {acc_win:.2f}%  
+    ⚽ Gols: {acc_goals:.2f}%  
+    🚩 Cantos: {acc_corners:.2f}%  
+    🟨 Cartões: {acc_cards:.2f}%  
+    """)
 
     st.dataframe(res)
 
     res["confidence"] = abs(res["prob_home"] - 50)
+
     st.write("🏆 Ranking")
     st.dataframe(res.sort_values("confidence", ascending=False))
