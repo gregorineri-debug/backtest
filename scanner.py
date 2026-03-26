@@ -1,4 +1,4 @@
-# BACKTEST PROFISSIONAL DE FUTEBOL (V3.3 - FORMA RECENTE)
+# BACKTEST PROFISSIONAL V4 (PESADO)
 
 import pandas as pd
 import numpy as np
@@ -14,26 +14,26 @@ LEAGUES = {
     "E2": "England League One",
     "E3": "England League Two",
     "D1": "Germany Bundesliga",
-    "D2": "Germany 2. Bundesliga",
+    "D2": "Germany 2",
     "F1": "France Ligue 1",
     "F2": "France Ligue 2",
     "SP1": "Spain La Liga",
     "SP2": "Spain Segunda",
     "I1": "Italy Serie A",
     "I2": "Italy Serie B",
-    "P1": "Portugal Primeira Liga",
-    "P2": "Portugal Segunda Liga"
+    "P1": "Portugal Liga",
+    "P2": "Portugal Liga 2"
 }
 
 # ------------------------------
-# DATA LOADER
+# LOAD
 # ------------------------------
 def generate_seasons(n=6):
     seasons = []
-    current_year = datetime.now().year
+    y = datetime.now().year
     for i in range(n):
-        y1 = (current_year - i) % 100
-        y2 = (current_year - i + 1) % 100
+        y1 = (y - i) % 100
+        y2 = (y - i + 1) % 100
         seasons.append(f"{y1:02d}{y2:02d}")
     return seasons
 
@@ -42,25 +42,21 @@ def load_league(season, code):
     url = f"https://www.football-data.co.uk/mmz4281/{season}/{code}.csv"
     try:
         df = pd.read_csv(url)
-        df["League"] = LEAGUES.get(code, code)
         df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+        df["League"] = LEAGUES[code]
         df["Season"] = season
         return df
     except:
         return pd.DataFrame()
 
 
-def load_all_data():
+def load_all():
     frames = []
-    for season in generate_seasons():
-        for code in LEAGUES.keys():
-            df = load_league(season, code)
+    for s in generate_seasons():
+        for c in LEAGUES:
+            df = load_league(s, c)
             if not df.empty:
                 frames.append(df)
-
-    if not frames:
-        return pd.DataFrame()
-
     df = pd.concat(frames, ignore_index=True)
     df = df.dropna(subset=["Date"])
     df = df.sort_values("Date")
@@ -68,156 +64,192 @@ def load_all_data():
 
 
 # ------------------------------
-# FILTRO DATA
+# FILTRO
 # ------------------------------
-def filter_day(df, selected_date):
-    start = datetime.combine(selected_date, datetime.min.time())
-    end = datetime.combine(selected_date, datetime.max.time())
+def filter_day(df, date):
+    start = datetime.combine(date, datetime.min.time())
+    end = datetime.combine(date, datetime.max.time())
     return df[(df["Date"] >= start) & (df["Date"] <= end)]
 
 
 # ------------------------------
-# FORMA RECENTE (PESADA)
+# FORMA (CASA/FORA + PESO)
 # ------------------------------
-def compute_team_form(df, team, last_n=10):
+def team_form(df, team, home=True, n=10):
 
-    if df.empty:
-        return 0.0, 0.0
+    if home:
+        games = df[df["HomeTeam"] == team]
+    else:
+        games = df[df["AwayTeam"] == team]
 
-    games = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)]
-    games = games.sort_values("Date").tail(last_n)
+    games = games.sort_values("Date").tail(n)
 
     if games.empty:
-        return 0.0, 0.0
+        return 0, 0
 
-    weights = np.linspace(0.3, 1.0, len(games))  # crescente
-    weights = weights / weights.sum()
+    weights = np.linspace(0.4, 1.0, len(games))
+    weights /= weights.sum()
 
-    scored = []
-    conceded = []
+    gf = []
+    ga = []
+
+    for _, r in games.iterrows():
+        if home:
+            gf.append(r["FTHG"])
+            ga.append(r["FTAG"])
+        else:
+            gf.append(r["FTAG"])
+            ga.append(r["FTHG"])
+
+    return np.sum(np.array(gf) * weights), np.sum(np.array(ga) * weights)
+
+
+# ------------------------------
+# STREAK
+# ------------------------------
+def get_streak(df, team, n=5):
+    games = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)]
+    games = games.sort_values("Date").tail(n)
+
+    score = 0
 
     for _, r in games.iterrows():
         if r["HomeTeam"] == team:
-            scored.append(r["FTHG"])
-            conceded.append(r["FTAG"])
+            if r["FTR"] == "H":
+                score += 1
+            elif r["FTR"] == "A":
+                score -= 1
         else:
-            scored.append(r["FTAG"])
-            conceded.append(r["FTHG"])
+            if r["FTR"] == "A":
+                score += 1
+            elif r["FTR"] == "H":
+                score -= 1
 
-    scored = np.array(scored)
-    conceded = np.array(conceded)
-
-    return np.sum(scored * weights), np.sum(conceded * weights)
+    return score * 0.2
 
 
 # ------------------------------
-# MODELO
+# FORÇA ADVERSÁRIO
 # ------------------------------
-def win_probability(home_score, away_score):
-    diff = home_score - away_score
+def opponent_strength(df, team, n=10):
+
+    games = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)]
+    games = games.tail(n)
+
+    strength = []
+
+    for _, r in games.iterrows():
+        if r["HomeTeam"] == team:
+            strength.append(r["FTAG"])
+        else:
+            strength.append(r["FTHG"])
+
+    return np.mean(strength) if strength else 0
+
+
+# ------------------------------
+# SCORE FINAL
+# ------------------------------
+def compute_score(df, home, away):
+
+    h_for, h_against = team_form(df, home, home=True)
+    a_for, a_against = team_form(df, away, home=False)
+
+    h_streak = get_streak(df, home)
+    a_streak = get_streak(df, away)
+
+    h_strength = opponent_strength(df, home)
+    a_strength = opponent_strength(df, away)
+
+    home_score = (h_for - a_against) + h_streak - h_strength * 0.1
+    away_score = (a_for - h_against) + a_streak - a_strength * 0.1
+
+    return home_score, away_score
+
+
+# ------------------------------
+# PROBABILIDADE
+# ------------------------------
+def prob(home, away):
+    diff = home - away
     return 1 / (1 + np.exp(-diff))
-
-
-def calculate_score(h_for, h_against, a_for, a_against):
-    home = h_for - a_against
-    away = a_for - h_against
-    return home, away
 
 
 # ------------------------------
 # MERCADOS
 # ------------------------------
-def goals_market(h_for, a_for):
-    total = h_for + a_for
-    return "OVER 2.5" if total > 2.5 else "UNDER 2.5"
+def goals(h, a):
+    return "OVER 2.5" if (h + a) > 2.5 else "UNDER 2.5"
 
 
-def corners_market(home_score, away_score):
-    est = abs(home_score - away_score) * 5
-    return "OVER 10.5" if est > 10.5 else "UNDER 10.5"
+def corners(h, a):
+    return "OVER 10.5" if abs(h - a) * 5 > 10.5 else "UNDER 10.5"
 
 
-def cards_market(home_score, away_score):
-    est = (3 - abs(home_score - away_score)) + 2
-    return "OVER 4.5" if est > 4.5 else "UNDER 4.5"
+def cards(h, a):
+    return "OVER 4.5" if (3 - abs(h - a)) + 2 > 4.5 else "UNDER 4.5"
 
 
 # ------------------------------
 # BACKTEST
 # ------------------------------
-def run_model(df_day, df_history):
+def run(df_day, history):
 
-    results = []
+    rows = []
 
-    for _, row in df_day.iterrows():
+    for _, r in df_day.iterrows():
 
-        home = row["HomeTeam"]
-        away = row["AwayTeam"]
+        home = r["HomeTeam"]
+        away = r["AwayTeam"]
 
-        home_for, home_against = compute_team_form(df_history, home)
-        away_for, away_against = compute_team_form(df_history, away)
+        h, a = compute_score(history, home, away)
 
-        home_score, away_score = calculate_score(
-            home_for, home_against,
-            away_for, away_against
-        )
+        p = prob(h, a)
 
-        prob_home = win_probability(home_score, away_score)
+        pred = "HOME" if p > 0.5 else "AWAY"
+        real = "HOME" if r["FTR"] == "H" else "AWAY" if r["FTR"] == "A" else "DRAW"
 
-        pred = "HOME" if prob_home > 0.5 else "AWAY"
-        actual = "HOME" if row["FTR"] == "H" else "AWAY" if row["FTR"] == "A" else "DRAW"
-
-        results.append({
+        rows.append({
             "home": home,
             "away": away,
             "pred_win": pred,
-            "prob_home": round(prob_home * 100, 2),
+            "prob_home": round(p * 100, 2),
 
-            "goals_market": goals_market(home_for, away_for),
-            "corners_market": corners_market(home_score, away_score),
-            "cards_market": cards_market(home_score, away_score),
+            "goals_market": goals(h, a),
+            "corners_market": corners(h, a),
+            "cards_market": cards(h, a),
 
-            "actual": actual,
-            "correct_win": pred == actual,
-
-            "league": row["League"],
-            "season": row["Season"]
+            "correct": pred == real
         })
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(rows)
 
 
 # ------------------------------
-# STREAMLIT
+# UI (IGUAL)
 # ------------------------------
-st.title("⚽ Backtest Futebol V3.3 - Forma Recente")
+st.title("⚽ Backtest Futebol V4")
 
-selected_date = st.date_input("Selecione a data")
+date = st.date_input("Selecione a data")
 
 if st.button("Rodar"):
 
-    with st.spinner("Carregando dados..."):
-        df_all = load_all_data()
+    df = load_all()
 
-    if df_all.empty:
-        st.error("Erro ao carregar dados")
-        st.stop()
-
-    df_day = filter_day(df_all, selected_date)
-    df_history = df_all[df_all["Date"] < pd.to_datetime(selected_date)]
+    df_day = filter_day(df, date)
+    history = df[df["Date"] < pd.to_datetime(date)]
 
     if df_day.empty:
-        st.warning("Sem jogos no dia")
+        st.warning("Sem jogos")
         st.stop()
 
-    results = run_model(df_day, df_history)
+    res = run(df_day, history)
 
-    accuracy = results["correct_win"].mean() * 100
-    st.success(f"Acurácia: {accuracy:.2f}%")
+    acc = res["correct"].mean() * 100
+    st.success(f"Acurácia: {acc:.2f}%")
 
-    st.dataframe(results)
+    st.dataframe(res)
 
-    results["confidence"] = abs(results["prob_home"] - 50)
-
-    st.write("🏆 Ranking de Picks")
-    st.dataframe(results.sort_values("confidence", ascending=False))
+    res["confidence"] = abs(res["prob_home"] - 50)
+    st.write("🏆 Ranking")
+    st.dataframe(res.sort_values("confidence", ascending=False))
