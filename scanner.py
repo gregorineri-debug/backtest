@@ -95,6 +95,14 @@ def filter_by_date(df, selected_date):
 # ------------------------------
 
 def compute_team_form(history_df, team):
+    # 🔒 Correção: garantir estrutura mesmo se vazio
+    if history_df is None or history_df.empty:
+        return 0.0, 0.0
+
+    required_cols = {"HomeTeam", "AwayTeam", "FTHG", "FTAG"}
+    if not required_cols.issubset(history_df.columns):
+        return 0.0, 0.0
+
     team_games = history_df[(history_df["HomeTeam"] == team) | (history_df["AwayTeam"] == team)]
 
     if team_games.empty:
@@ -111,7 +119,10 @@ def compute_team_form(history_df, team):
             goals_scored.append(r.get("FTAG", 0))
             goals_conceded.append(r.get("FTHG", 0))
 
-    return np.mean(goals_scored), np.mean(goals_conceded)
+    if len(goals_scored) == 0:
+        return 0.0, 0.0
+
+    return float(np.mean(goals_scored)), float(np.mean(goals_conceded))
 
 # ------------------------------
 # CORE MODEL
@@ -151,7 +162,9 @@ def cards_market(home_score, away_score):
 
 def backtest(df):
     results = []
-    history = []
+
+    # 🔒 Correção: inicializa histórico com colunas corretas
+    history = pd.DataFrame(columns=df.columns)
 
     df = df.sort_values("Date")
 
@@ -160,8 +173,8 @@ def backtest(df):
         home = row["HomeTeam"]
         away = row["AwayTeam"]
 
-        # SOMENTE PASSADO (ANTES DO JOGO ATUAL)
-        past = pd.DataFrame(history)
+        # SOMENTE PASSADO
+        past = history.copy()
 
         home_for, home_against = compute_team_form(past, home)
         away_for, away_against = compute_team_form(past, away)
@@ -191,8 +204,8 @@ def backtest(df):
             "season": row.get("Season")
         })
 
-        # ADICIONA JOGO AO HISTÓRICO APÓS PROCESSAR
-        history.append(row.to_dict())
+        # 🔒 adiciona linha corretamente mantendo estrutura
+        history = pd.concat([history, pd.DataFrame([row])], ignore_index=True)
 
     return pd.DataFrame(results)
 
