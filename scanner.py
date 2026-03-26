@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 
 # ------------------------------
@@ -40,32 +40,54 @@ def load_data():
 
 
 # ------------------------------
-# SOFASCORE FIXTURE
+# SOFASCORE COM AJUSTE GMT-3
 # ------------------------------
 def fetch_games(date):
 
-    date_str = pd.to_datetime(date).strftime("%Y-%m-%d")
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
+    # 🔥 converte para UTC (SofaScore usa UTC)
+    local_date = pd.to_datetime(date)
 
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-    data = r.json()
+    start_utc = (local_date - timedelta(hours=3)).strftime("%Y-%m-%d")
+    end_utc = (local_date + timedelta(days=1) - timedelta(hours=3)).strftime("%Y-%m-%d")
 
     games = []
 
-    for e in data.get("events", []):
+    # 🔁 busca dois dias para garantir cobertura correta
+    for d in [start_utc, end_utc]:
+
+        url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{d}"
+
         try:
-            games.append({
-                "HomeTeam": e["homeTeam"]["name"],
-                "AwayTeam": e["awayTeam"]["name"]
-            })
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            data = r.json()
         except:
             continue
 
-    return pd.DataFrame(games)
+        for e in data.get("events", []):
+            try:
+                # 🔥 pega timestamp real do jogo
+                ts = e["startTimestamp"]
+
+                # converte UTC → São Paulo (GMT-3)
+                game_time = datetime.utcfromtimestamp(ts) - timedelta(hours=3)
+
+                # filtra só jogos do dia selecionado (SP)
+                if game_time.date() != local_date.date():
+                    continue
+
+                games.append({
+                    "HomeTeam": e["homeTeam"]["name"],
+                    "AwayTeam": e["awayTeam"]["name"]
+                })
+
+            except:
+                continue
+
+    return pd.DataFrame(games).drop_duplicates()
 
 
 # ------------------------------
-# FORMA REAL MELHORADA
+# FORMA REAL
 # ------------------------------
 def team_stats(df, team):
 
@@ -88,7 +110,7 @@ def team_stats(df, team):
 
 
 # ------------------------------
-# FALLBACK CONTROLADO
+# FALLBACK
 # ------------------------------
 def fallback_model():
     base = GLOBAL_AVG_GOALS / 2
@@ -97,7 +119,7 @@ def fallback_model():
 
 
 # ------------------------------
-# SCORE MELHORADO (CORREÇÃO PRINCIPAL)
+# SCORE CORRIGIDO
 # ------------------------------
 def compute_score(df, home, away):
 
@@ -110,32 +132,25 @@ def compute_score(df, home, away):
     else:
         return fallback_model()
 
-    # 🔥 NOVO: força real (ataque vs defesa)
     home_strength = (h_for * 1.2) - (a_against * 1.0)
     away_strength = (a_for * 1.2) - (h_against * 1.0)
 
-    # 🔥 bônus casa (corrige enviesamento)
+    # bônus casa
     home_strength += 0.25
 
     return home_strength, away_strength
 
 
 # ------------------------------
-# PROBABILIDADE CORRIGIDA
+# PROB
 # ------------------------------
 def prob(h, a):
-
-    diff = h - a
-
-    # 🔥 logistic calibrado (corrige inversão)
-    p = 1 / (1 + np.exp(-diff))
-
-    # 🔒 limites realistas
+    p = 1 / (1 + np.exp(-(h - a)))
     return np.clip(p, 0.05, 0.95)
 
 
 # ------------------------------
-# MERCADOS AJUSTADOS
+# MERCADOS
 # ------------------------------
 def goals_market(h, a):
 
@@ -150,27 +165,15 @@ def goals_market(h, a):
 
 
 def corners_market(h, a):
-
-    diff = abs(h - a)
-
-    if diff > 0.8:
-        return "UNDER 10.5"
-    else:
-        return "OVER 10.5"
+    return "UNDER 10.5" if abs(h - a) > 0.8 else "OVER 10.5"
 
 
 def cards_market(h, a):
-
-    equilíbrio = abs(h - a)
-
-    if equilíbrio < 0.5:
-        return "OVER 4.5"
-    else:
-        return "UNDER 4.5"
+    return "OVER 4.5" if abs(h - a) < 0.5 else "UNDER 4.5"
 
 
 # ------------------------------
-# CONFIANÇA REAL (FIX)
+# CONFIANÇA
 # ------------------------------
 def confidence_score(prob_home):
     return abs(prob_home - 0.5) * 200
@@ -191,14 +194,12 @@ def run(df_hist, df_games):
         h, a = compute_score(df_hist, home, away)
         p = prob(h, a)
 
-        confidence = confidence_score(p)
-
         rows.append({
             "home": home,
             "away": away,
             "pred_win": "HOME" if p > 0.5 else "AWAY",
             "prob_home": round(p * 100, 2),
-            "confidence": round(confidence, 2),
+            "confidence": round(confidence_score(p), 2),
             "goals": goals_market(h, a),
             "corners": corners_market(h, a),
             "cards": cards_market(h, a)
@@ -208,9 +209,9 @@ def run(df_hist, df_games):
 
 
 # ------------------------------
-# UI (MANTIDA)
+# UI
 # ------------------------------
-st.title("⚽ Modelo V5 Global CORRIGIDO")
+st.title("⚽ Modelo V5 Global (GMT São Paulo ✔️)")
 
 date = st.date_input("Selecione a data")
 
@@ -220,7 +221,7 @@ if st.button("Rodar"):
     df_games = fetch_games(date)
 
     if df_games.empty:
-        st.error("❌ Nenhum jogo encontrado")
+        st.error("❌ Nenhum jogo encontrado para essa data")
     else:
         res = run(df_hist, df_games)
 
