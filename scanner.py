@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
 
 # ------------------------------
 # LIGAS
@@ -24,7 +26,7 @@ LEAGUES = {
 }
 
 # ------------------------------
-# LOAD DATA
+# LOAD HISTÓRICO
 # ------------------------------
 def generate_seasons(n=6):
     seasons = []
@@ -63,7 +65,67 @@ def load_all():
 
 
 # ------------------------------
-# FILTRO POR DIA
+# BUSCAR JOGOS FUTUROS (FBREF)
+# ------------------------------
+def fetch_future_games(date):
+
+    urls = [
+        "https://fbref.com/en/comps/9/schedule/",
+        "https://fbref.com/en/comps/12/schedule/",
+        "https://fbref.com/en/comps/11/schedule/",
+        "https://fbref.com/en/comps/13/schedule/",
+        "https://fbref.com/en/comps/20/schedule/",
+        "https://fbref.com/en/comps/32/schedule/"
+    ]
+
+    target_date = pd.to_datetime(date).date()
+    games = []
+
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=10)
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            table = soup.find("table")
+            if not table:
+                continue
+
+            rows = table.find_all("tr")
+
+            for row in rows:
+                cols = row.find_all("td")
+                if len(cols) < 5:
+                    continue
+
+                try:
+                    match_date = row.find("th").text.strip()
+                    match_date = pd.to_datetime(match_date, errors="coerce").date()
+                except:
+                    continue
+
+                if match_date != target_date:
+                    continue
+
+                try:
+                    home = cols[2].text.strip()
+                    away = cols[4].text.strip()
+                except:
+                    continue
+
+                if home and away:
+                    games.append({
+                        "HomeTeam": home,
+                        "AwayTeam": away
+                    })
+
+        except:
+            continue
+
+    return pd.DataFrame(games)
+
+
+# ------------------------------
+# FILTRO DIA
 # ------------------------------
 def filter_day(df, date):
     start = datetime.combine(date, datetime.min.time())
@@ -72,15 +134,11 @@ def filter_day(df, date):
 
 
 # ------------------------------
-# FORMA
+# FORMA (PESO RECENTE)
 # ------------------------------
 def team_form(df, team, home=True, n=10):
 
-    if home:
-        games = df[df["HomeTeam"] == team]
-    else:
-        games = df[df["AwayTeam"] == team]
-
+    games = df[df["HomeTeam"] == team] if home else df[df["AwayTeam"] == team]
     games = games.sort_values("Date").tail(n)
 
     if games.empty:
@@ -110,7 +168,6 @@ def get_streak(df, team, n=5):
     games = games.sort_values("Date").tail(n)
 
     score = 0
-
     for _, r in games.iterrows():
         if r["HomeTeam"] == team:
             score += 1 if r["FTR"] == "H" else -1 if r["FTR"] == "A" else 0
@@ -124,11 +181,9 @@ def get_streak(df, team, n=5):
 # FORÇA ADVERSÁRIO
 # ------------------------------
 def opponent_strength(df, team, n=10):
-
     games = df[(df["HomeTeam"] == team) | (df["AwayTeam"] == team)].tail(n)
 
     vals = []
-
     for _, r in games.iterrows():
         if r["HomeTeam"] == team:
             vals.append(r["FTAG"])
@@ -159,14 +214,14 @@ def compute_score(df, home, away):
 
 
 # ------------------------------
-# PROBABILIDADE
+# PROB
 # ------------------------------
 def prob(h, a):
     return 1 / (1 + np.exp(-(h - a)))
 
 
 # ------------------------------
-# MERCADOS (PREVISÃO)
+# MERCADOS
 # ------------------------------
 def goals_pred(h, a):
     return "OVER" if (h + a) > 2.5 else "UNDER"
@@ -178,31 +233,6 @@ def corners_pred(h, a):
 
 def cards_pred(h, a):
     return "OVER" if (3 - abs(h - a)) + 2 > 4.5 else "UNDER"
-
-
-# ------------------------------
-# MERCADOS (REAL)
-# ------------------------------
-def goals_real(row):
-    return "OVER" if (row["FTHG"] + row["FTAG"]) > 2.5 else "UNDER"
-
-
-def corners_real(row):
-    if "HC" in row and "AC" in row:
-        try:
-            return "OVER" if (float(row["HC"]) + float(row["AC"])) > 10.5 else "UNDER"
-        except:
-            return None
-    return None
-
-
-def cards_real(row):
-    if "HY" in row and "AY" in row:
-        try:
-            return "OVER" if (float(row["HY"]) + float(row["AY"])) > 4.5 else "UNDER"
-        except:
-            return None
-    return None
 
 
 # ------------------------------
@@ -220,32 +250,14 @@ def run(df_day, history):
         h, a = compute_score(history, home, away)
         p = prob(h, a)
 
-        pred = "HOME" if p > 0.5 else "AWAY"
-        real = "HOME" if r.get("FTR") == "H" else "AWAY" if r.get("FTR") == "A" else None
-
-        g_pred = goals_pred(h, a)
-        g_real = goals_real(r) if real else None
-
-        c_pred = corners_pred(h, a)
-        c_real = corners_real(r)
-
-        ca_pred = cards_pred(h, a)
-        ca_real = cards_real(r)
-
         rows.append({
             "home": home,
             "away": away,
-            "pred_win": pred,
+            "pred_win": "HOME" if p > 0.5 else "AWAY",
             "prob_home": round(p * 100, 2),
-
-            "goals_market": g_pred,
-            "corners_market": c_pred,
-            "cards_market": ca_pred,
-
-            "correct_win": (pred == real) if real else None,
-            "correct_goals": (g_pred == g_real) if g_real else None,
-            "correct_corners": (c_pred == c_real) if c_real else None,
-            "correct_cards": (ca_pred == ca_real) if ca_real else None
+            "goals_market": goals_pred(h, a),
+            "corners_market": corners_pred(h, a),
+            "cards_market": cards_pred(h, a)
         })
 
     return pd.DataFrame(rows)
@@ -254,7 +266,7 @@ def run(df_day, history):
 # ------------------------------
 # UI
 # ------------------------------
-st.title("⚽ Backtest Futebol V4.3")
+st.title("⚽ Backtest Futebol V4.4")
 
 date = st.date_input("Selecione a data")
 
@@ -265,42 +277,28 @@ if st.button("Rodar"):
     df_day = filter_day(df, date)
     history = df[df["Date"] < pd.to_datetime(date)]
 
+    # SE NÃO TIVER HISTÓRICO → BUSCA FUTURO
     if df_day.empty:
-        st.warning("Sem jogos")
-        st.stop()
+        st.warning("📡 Buscando jogos futuros...")
+        df_day = fetch_future_games(date)
 
-    has_results = df_day["FTR"].notna().any() if "FTR" in df_day else False
-
-    res = run(df_day, history)
-
-    # BACKTEST
-    if has_results:
-
-        st.success("📊 Modo Backtest")
-
-        acc_win = res["correct_win"].dropna().mean() * 100
-        acc_goals = res["correct_goals"].dropna().mean() * 100
-        acc_corners = res["correct_corners"].dropna().mean() * 100
-        acc_cards = res["correct_cards"].dropna().mean() * 100
-
-        st.write(f"Win: {acc_win:.2f}%")
-        st.write(f"Gols: {acc_goals:.2f}%")
-        st.write(f"Cantos: {acc_corners:.2f}%")
-        st.write(f"Cartões: {acc_cards:.2f}%")
-
-        st.dataframe(res)
-
-    # PICKS
-    else:
+        if df_day.empty:
+            st.error("❌ Nenhum jogo encontrado")
+            st.stop()
 
         st.success("🎯 Modo Picks (Jogos futuros)")
 
+        res = run(df_day, history)
         res["confidence"] = abs(res["prob_home"] - 50)
 
-        strong = res[res["confidence"] >= 10]
-
         st.write("🔥 Picks Fortes")
-        st.dataframe(strong.sort_values("confidence", ascending=False))
+        st.dataframe(res[res["confidence"] >= 10].sort_values("confidence", ascending=False))
 
         st.write("📊 Todos os jogos")
         st.dataframe(res.sort_values("prob_home", ascending=False))
+
+    else:
+        st.success("📊 Modo Backtest")
+
+        res = run(df_day, history)
+        st.dataframe(res)
