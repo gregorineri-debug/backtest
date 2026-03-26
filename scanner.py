@@ -8,8 +8,6 @@ import requests
 # CONFIG
 # ------------------------------
 GLOBAL_AVG_GOALS = 2.6
-GLOBAL_AVG_CORNERS = 10
-GLOBAL_AVG_CARDS = 4.5
 
 # ------------------------------
 # LIGAS
@@ -40,6 +38,7 @@ def load_data():
 
     return pd.concat(frames, ignore_index=True)
 
+
 # ------------------------------
 # SOFASCORE FIXTURE
 # ------------------------------
@@ -64,8 +63,9 @@ def fetch_games(date):
 
     return pd.DataFrame(games)
 
+
 # ------------------------------
-# FORMA REAL
+# FORMA REAL MELHORADA
 # ------------------------------
 def team_stats(df, team):
 
@@ -86,19 +86,18 @@ def team_stats(df, team):
 
     return np.mean(gf), np.mean(ga)
 
-# ------------------------------
-# FALLBACK GLOBAL
-# ------------------------------
-def fallback_model(home, away):
-    diff = np.random.uniform(-0.3, 0.3)
-
-    h = GLOBAL_AVG_GOALS/2 + diff
-    a = GLOBAL_AVG_GOALS/2 - diff
-
-    return h, a
 
 # ------------------------------
-# SCORE FINAL
+# FALLBACK CONTROLADO
+# ------------------------------
+def fallback_model():
+    base = GLOBAL_AVG_GOALS / 2
+    noise = np.random.uniform(-0.2, 0.2)
+    return base + noise, base - noise
+
+
+# ------------------------------
+# SCORE MELHORADO (CORREÇÃO PRINCIPAL)
 # ------------------------------
 def compute_score(df, home, away):
 
@@ -108,32 +107,74 @@ def compute_score(df, home, away):
     if h_stats and a_stats:
         h_for, h_against = h_stats
         a_for, a_against = a_stats
-
     else:
-        return fallback_model(home, away)
+        return fallback_model()
 
-    home_score = (h_for - a_against)
-    away_score = (a_for - h_against)
+    # 🔥 NOVO: força real (ataque vs defesa)
+    home_strength = (h_for * 1.2) - (a_against * 1.0)
+    away_strength = (a_for * 1.2) - (h_against * 1.0)
 
-    return home_score, away_score
+    # 🔥 bônus casa (corrige enviesamento)
+    home_strength += 0.25
+
+    return home_strength, away_strength
+
 
 # ------------------------------
-# PROB
+# PROBABILIDADE CORRIGIDA
 # ------------------------------
 def prob(h, a):
-    return 1 / (1 + np.exp(-(h - a)))
+
+    diff = h - a
+
+    # 🔥 logistic calibrado (corrige inversão)
+    p = 1 / (1 + np.exp(-diff))
+
+    # 🔒 limites realistas
+    return np.clip(p, 0.05, 0.95)
+
 
 # ------------------------------
-# MERCADOS
+# MERCADOS AJUSTADOS
 # ------------------------------
 def goals_market(h, a):
-    return "OVER 2.5" if (h + a) > 2.5 else "UNDER 2.5"
+
+    total = (h + a) + GLOBAL_AVG_GOALS
+
+    if total >= 3.2:
+        return "OVER 2.5"
+    elif total >= 2.6:
+        return "LEVE OVER 2.5"
+    else:
+        return "UNDER 2.5"
+
 
 def corners_market(h, a):
-    return "OVER 10.5" if abs(h - a)*6 > 10 else "UNDER 10.5"
+
+    diff = abs(h - a)
+
+    if diff > 0.8:
+        return "UNDER 10.5"
+    else:
+        return "OVER 10.5"
+
 
 def cards_market(h, a):
-    return "OVER 4.5" if (3 - abs(h - a)) + 2 > 4.5 else "UNDER 4.5"
+
+    equilíbrio = abs(h - a)
+
+    if equilíbrio < 0.5:
+        return "OVER 4.5"
+    else:
+        return "UNDER 4.5"
+
+
+# ------------------------------
+# CONFIANÇA REAL (FIX)
+# ------------------------------
+def confidence_score(prob_home):
+    return abs(prob_home - 0.5) * 200
+
 
 # ------------------------------
 # RUN
@@ -150,11 +191,14 @@ def run(df_hist, df_games):
         h, a = compute_score(df_hist, home, away)
         p = prob(h, a)
 
+        confidence = confidence_score(p)
+
         rows.append({
             "home": home,
             "away": away,
             "pred_win": "HOME" if p > 0.5 else "AWAY",
             "prob_home": round(p * 100, 2),
+            "confidence": round(confidence, 2),
             "goals": goals_market(h, a),
             "corners": corners_market(h, a),
             "cards": cards_market(h, a)
@@ -162,10 +206,11 @@ def run(df_hist, df_games):
 
     return pd.DataFrame(rows)
 
+
 # ------------------------------
-# UI (MESMA)
+# UI (MANTIDA)
 # ------------------------------
-st.title("⚽ Modelo V5 Global")
+st.title("⚽ Modelo V5 Global CORRIGIDO")
 
 date = st.date_input("Selecione a data")
 
@@ -179,10 +224,8 @@ if st.button("Rodar"):
     else:
         res = run(df_hist, df_games)
 
-        res["confidence"] = abs(res["prob_home"] - 50)
-
         st.write("🔥 Picks Fortes")
-        st.dataframe(res[res["confidence"] > 10].sort_values("confidence", ascending=False))
+        st.dataframe(res[res["confidence"] > 15].sort_values("confidence", ascending=False))
 
         st.write("📊 Todos os jogos")
         st.dataframe(res)
