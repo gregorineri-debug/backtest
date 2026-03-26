@@ -1,7 +1,7 @@
-# BACKTEST PROFISSIONAL DE FUTEBOL (V3 - PROFISSIONAL EXPANSÃO)
+# BACKTEST PROFISSIONAL DE FUTEBOL (V3.1 - BASE TEMPORAL CORRIGIDA)
 # Autor: ChatGPT
 # Streamlit + Pandas + Football-data.co.uk
-# Interface MANTIDA - apenas colunas extras adicionadas
+# Interface MANTIDA - apenas lógica interna ajustada (sem vazamento de dados)
 
 import pandas as pd
 import numpy as np
@@ -35,6 +35,7 @@ LEAGUES = {
 # ------------------------------
 # DATA LOADER
 # ------------------------------
+
 def generate_seasons(last_years=6):
     seasons = []
     current_year = datetime.now().year
@@ -70,92 +71,119 @@ def load_all_data():
     if len(frames) == 0:
         return pd.DataFrame()
 
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames, ignore_index=True)
+    df = df.dropna(subset=["Date"])
+    df = df.sort_values("Date")
+    return df
 
 # ------------------------------
 # FILTER BY DATE (SAO PAULO)
 # ------------------------------
+
 def filter_by_date(df, selected_date):
     df = df.copy()
 
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
-
     tz = ZoneInfo("America/Sao_Paulo")
-    start = datetime.combine(selected_date, datetime.min.time()).replace(tzinfo=tz)
-    end = datetime.combine(selected_date, datetime.max.time()).replace(tzinfo=tz)
+    start = datetime.combine(selected_date, datetime.min.time())
+    end = datetime.combine(selected_date, datetime.max.time())
 
-    df = df.dropna(subset=["Date"])
-    df["Date"] = df["Date"].dt.tz_localize(None)
-
-    mask = (df["Date"] >= start.replace(tzinfo=None)) & (df["Date"] <= end.replace(tzinfo=None))
-    return df.loc[mask]
+    mask = (df["Date"] >= start) & (df["Date"] <= end)
+    return df.loc[mask].copy()
 
 # ------------------------------
-# CORE MODEL (WIN PROB)
+# FEATURE ENGINE (APENAS PASSADO)
 # ------------------------------
+
+def compute_team_form(history_df, team):
+    team_games = history_df[(history_df["HomeTeam"] == team) | (history_df["AwayTeam"] == team)]
+
+    if team_games.empty:
+        return 0.0, 0.0
+
+    goals_scored = []
+    goals_conceded = []
+
+    for _, r in team_games.iterrows():
+        if r["HomeTeam"] == team:
+            goals_scored.append(r.get("FTHG", 0))
+            goals_conceded.append(r.get("FTAG", 0))
+        else:
+            goals_scored.append(r.get("FTAG", 0))
+            goals_conceded.append(r.get("FTHG", 0))
+
+    return np.mean(goals_scored), np.mean(goals_conceded)
+
+# ------------------------------
+# CORE MODEL
+# ------------------------------
+
 def win_probability(home_score, away_score):
     diff = home_score - away_score
     return 1 / (1 + np.exp(-diff))
 
-# ------------------------------
-# SCORE BASE
-# ------------------------------
-def calculate_score(row):
-    home = row.get("FTHG", 0)
-    away = row.get("FTAG", 0)
 
-    home_score = (home + 1) * 1.2 - (away + 1) * 0.8
-    away_score = (away + 1) * 1.2 - (home + 1) * 0.8
-
+def calculate_score(home_avg_for, home_avg_against, away_avg_for, away_avg_against):
+    home_score = home_avg_for - away_avg_against
+    away_score = away_avg_for - home_avg_against
     return home_score, away_score
 
 # ------------------------------
-# MARKET MODELS (COM PREMISSAS FIXAS)
+# MARKET MODELS (BASEADO EM HISTÓRICO)
 # ------------------------------
 
-# GOLS (OVER/UNDER 2.5)
-def goals_market(home_score, away_score):
-    estimated_goals = (home_score + away_score) * 0.9
-    return "OVER 2.5" if estimated_goals > 2.5 else "UNDER 2.5"
+def goals_market(home_avg_for, away_avg_for):
+    est = home_avg_for + away_avg_for
+    return "OVER 2.5" if est > 2.5 else "UNDER 2.5"
 
-# ESCANTEIOS (OVER/UNDER 10.5)
+
 def corners_market(home_score, away_score):
-    estimated_corners = abs(home_score - away_score) * 6
-    return "OVER 10.5" if estimated_corners > 10.5 else "UNDER 10.5"
+    est = abs(home_score - away_score) * 5
+    return "OVER 10.5" if est > 10.5 else "UNDER 10.5"
 
-# CARTOES (OVER/UNDER 4.5)
+
 def cards_market(home_score, away_score):
-    estimated_cards = (3 - abs(home_score - away_score)) + 2
-    return "OVER 4.5" if estimated_cards > 4.5 else "UNDER 4.5"
+    est = (3 - abs(home_score - away_score)) + 2
+    return "OVER 4.5" if est > 4.5 else "UNDER 4.5"
 
 # ------------------------------
-# BACKTEST ENGINE
+# BACKTEST ENGINE (SEM DATA LEAKAGE)
 # ------------------------------
+
 def backtest(df):
     results = []
+    history = []
+
+    df = df.sort_values("Date")
 
     for _, row in df.iterrows():
 
-        home_score, away_score = calculate_score(row)
+        home = row["HomeTeam"]
+        away = row["AwayTeam"]
+
+        # SOMENTE PASSADO (ANTES DO JOGO ATUAL)
+        past = pd.DataFrame(history)
+
+        home_for, home_against = compute_team_form(past, home)
+        away_for, away_against = compute_team_form(past, away)
+
+        home_score, away_score = calculate_score(home_for, home_against, away_for, away_against)
+
         prob_home = win_probability(home_score, away_score)
 
         pred = "HOME" if prob_home > 0.5 else "AWAY"
         actual = "HOME" if row.get("FTR") == "H" else "AWAY" if row.get("FTR") == "A" else "DRAW"
 
         results.append({
-            "home": row.get("HomeTeam"),
-            "away": row.get("AwayTeam"),
+            "home": home,
+            "away": away,
 
-            # WIN
             "pred_win": pred,
             "prob_home": round(prob_home * 100, 2),
 
-            # MARKETS COM NOVA PREMISSA
-            "goals_market": goals_market(home_score, away_score),
+            "goals_market": goals_market(home_for, away_for),
             "corners_market": corners_market(home_score, away_score),
             "cards_market": cards_market(home_score, away_score),
 
-            # RESULT
             "actual": actual,
             "correct_win": pred == actual,
 
@@ -163,11 +191,15 @@ def backtest(df):
             "season": row.get("Season")
         })
 
+        # ADICIONA JOGO AO HISTÓRICO APÓS PROCESSAR
+        history.append(row.to_dict())
+
     return pd.DataFrame(results)
 
 # ------------------------------
 # STREAMLIT UI (MANTIDO IGUAL)
 # ------------------------------
+
 st.title("⚽ Backtest Futebol V3 - Profissional")
 
 selected_date = st.date_input("Selecione o dia para análise")
@@ -194,13 +226,10 @@ if st.button("Rodar Backtest"):
 
     st.dataframe(results)
 
-    # RANKING PICKS
-    st.write("🏆 Ranking de Picks (maior confiança)")
     results["confidence"] = results["prob_home"].apply(lambda x: abs(x - 50))
-    ranking = results.sort_values("confidence", ascending=False)
-    st.dataframe(ranking)
+    st.write("🏆 Ranking de Picks")
+    st.dataframe(results.sort_values("confidence", ascending=False))
 
-    # RESUMOS
     st.write("Resumo por liga")
     st.dataframe(results.groupby("league")["correct_win"].mean())
 
@@ -208,9 +237,9 @@ if st.button("Rodar Backtest"):
     st.dataframe(results.groupby("season")["correct_win"].mean())
 
 # ------------------------------
-# FUTURO (V4 IDEIAS)
+# FUTURO (V4)
 # ------------------------------
-# xG real (FBref)
-# forma últimos 10 jogos
+# xG real
+# corners reais
+# cards por árbitro
 # elo rating
-# EV real (value betting)
