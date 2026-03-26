@@ -1,12 +1,12 @@
-# BACKTEST PROFISSIONAL DE FUTEBOL (V1) - CORRIGIDO COMPLETO
+# BACKTEST PROFISSIONAL DE FUTEBOL (V2 - DATA ONLY / FIXED)
 # Autor: ChatGPT
 # Streamlit + Pandas + Football-data.co.uk
 
 import pandas as pd
 import numpy as np
-import requests
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # ------------------------------
 # CONFIGURAÇÃO DE LIGAS
@@ -33,16 +33,28 @@ LEAGUES = {
     "P2": "Portugal Segunda Liga",
 
     "N1": "Netherlands Eredivisie",
-
     "B1": "Belgium Pro League",
-
     "SC0": "Scotland Premiership"
 }
 
 # ------------------------------
+# GERAR SEASONS AUTOMÁTICAS (últimos anos)
+# ------------------------------
+def generate_seasons(last_years=6):
+    seasons = []
+    current_year = datetime.now().year
+
+    for i in range(last_years):
+        y1 = (current_year - i) % 100
+        y2 = (current_year - i + 1) % 100
+        seasons.append(f"{y1:02d}{y2:02d}")
+
+    return seasons
+
+# ------------------------------
 # DOWNLOAD CSV LIGA
 # ------------------------------
-def load_league(season="2324", code="E0"):
+def load_league(season, code):
     url = f"https://www.football-data.co.uk/mmz4281/{season}/{code}.csv"
     try:
         df = pd.read_csv(url)
@@ -53,15 +65,18 @@ def load_league(season="2324", code="E0"):
         return pd.DataFrame()
 
 # ------------------------------
-# CARREGAR TODAS AS LIGAS
+# CARREGAR TODOS OS DADOS
 # ------------------------------
-def load_all_leagues(season="2324"):
+def load_all_data():
     frames = []
+    seasons = generate_seasons(6)
 
-    for cod in LEAGUES.keys():
-        df = load_league(season, cod)
-        if not df.empty:
-            frames.append(df)
+    for season in seasons:
+        for code in LEAGUES.keys():
+            df = load_league(season, code)
+            if not df.empty:
+                df["Season"] = season
+                frames.append(df)
 
     if len(frames) == 0:
         return pd.DataFrame()
@@ -69,19 +84,24 @@ def load_all_leagues(season="2324"):
     return pd.concat(frames, ignore_index=True)
 
 # ------------------------------
-# FILTRO DE DATA
+# FILTRO POR DATA (SÃO PAULO TIME)
 # ------------------------------
-def filter_by_date(df, start_date, end_date):
+def filter_by_date(df, selected_date):
     df = df.copy()
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce", dayfirst=True)
 
-    start_date = pd.to_datetime(start_date)
-    end_date = pd.to_datetime(end_date)
+    tz = ZoneInfo("America/Sao_Paulo")
+
+    start = datetime.combine(selected_date, datetime.min.time()).replace(tzinfo=tz)
+    end = datetime.combine(selected_date, datetime.max.time()).replace(tzinfo=tz)
 
     df = df.dropna(subset=["Date"])
 
-    mask = (df["Date"] >= start_date) & (df["Date"] <= end_date)
+    # normaliza para timezone naive comparável
+    df["Date"] = df["Date"].dt.tz_localize(None)
+
+    mask = (df["Date"] >= start.replace(tzinfo=None)) & (df["Date"] <= end.replace(tzinfo=None))
 
     return df.loc[mask]
 
@@ -90,8 +110,8 @@ def filter_by_date(df, start_date, end_date):
 # ------------------------------
 def calculate_score(row):
     try:
-        home_attack = row["FTHG"] + 1
-        away_attack = row["FTAG"] + 1
+        home_attack = row.get("FTHG", 0) + 1
+        away_attack = row.get("FTAG", 0) + 1
 
         home_score = (home_attack * 1.2) - (away_attack * 0.8)
         away_score = (away_attack * 1.2) - (home_attack * 0.8)
@@ -118,7 +138,8 @@ def backtest(df):
             "pred": prediction,
             "actual": actual,
             "correct": prediction == actual,
-            "league": row.get("League")
+            "league": row.get("League"),
+            "season": row.get("Season")
         })
 
     return pd.DataFrame(results)
@@ -126,26 +147,23 @@ def backtest(df):
 # ------------------------------
 # STREAMLIT UI
 # ------------------------------
-st.title("⚽ Backtest Futebol Profissional V1 - CORRIGIDO")
+st.title("⚽ Backtest Futebol V2 - Data Only (SAO PAULO)")
 
-season = st.selectbox("Season", ["2324", "2223", "2122"])
-
-start = st.date_input("Data início")
-end = st.date_input("Data fim")
+selected_date = st.date_input("Selecione o dia para análise")
 
 if st.button("Rodar Backtest"):
 
-    with st.spinner("Carregando ligas..."):
-        df = load_all_leagues(season)
+    with st.spinner("Carregando base histórica completa..."):
+        df = load_all_data()
 
     if df.empty:
-        st.error("Falha ao carregar dados")
+        st.error("Não foi possível carregar dados")
         st.stop()
 
-    df = filter_by_date(df, start, end)
+    df = filter_by_date(df, selected_date)
 
     if df.empty:
-        st.warning("Nenhum jogo encontrado nesse período")
+        st.warning("Nenhum jogo encontrado para essa data")
         st.stop()
 
     results = backtest(df)
@@ -159,8 +177,11 @@ if st.button("Rodar Backtest"):
     st.write("Resumo por liga")
     st.dataframe(results.groupby("league")["correct"].mean())
 
+    st.write("Resumo por temporada")
+    st.dataframe(results.groupby("season")["correct"].mean())
+
 # ------------------------------
-# FUTURO (V2 IDEAS)
+# FUTURO (V3 IDEAS)
 # ------------------------------
 # xG real (FBref)
 # forma últimos 10 jogos
