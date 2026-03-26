@@ -1,5 +1,3 @@
-# BACKTEST PROFISSIONAL V4.2 (COM VALIDAÇÃO REAL COMPLETA)
-
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -26,7 +24,7 @@ LEAGUES = {
 }
 
 # ------------------------------
-# LOAD
+# LOAD DATA
 # ------------------------------
 def generate_seasons(n=6):
     seasons = []
@@ -65,7 +63,7 @@ def load_all():
 
 
 # ------------------------------
-# FILTRO
+# FILTRO POR DIA
 # ------------------------------
 def filter_day(df, date):
     start = datetime.combine(date, datetime.min.time())
@@ -74,7 +72,7 @@ def filter_day(df, date):
 
 
 # ------------------------------
-# FORMA CASA/FORA
+# FORMA
 # ------------------------------
 def team_form(df, team, home=True, n=10):
 
@@ -161,14 +159,14 @@ def compute_score(df, home, away):
 
 
 # ------------------------------
-# PROB
+# PROBABILIDADE
 # ------------------------------
 def prob(h, a):
     return 1 / (1 + np.exp(-(h - a)))
 
 
 # ------------------------------
-# MERCADOS (PRED)
+# MERCADOS (PREVISÃO)
 # ------------------------------
 def goals_pred(h, a):
     return "OVER" if (h + a) > 2.5 else "UNDER"
@@ -192,8 +190,7 @@ def goals_real(row):
 def corners_real(row):
     if "HC" in row and "AC" in row:
         try:
-            total = float(row["HC"]) + float(row["AC"])
-            return "OVER" if total > 10.5 else "UNDER"
+            return "OVER" if (float(row["HC"]) + float(row["AC"])) > 10.5 else "UNDER"
         except:
             return None
     return None
@@ -202,15 +199,14 @@ def corners_real(row):
 def cards_real(row):
     if "HY" in row and "AY" in row:
         try:
-            total = float(row["HY"]) + float(row["AY"])
-            return "OVER" if total > 4.5 else "UNDER"
+            return "OVER" if (float(row["HY"]) + float(row["AY"])) > 4.5 else "UNDER"
         except:
             return None
     return None
 
 
 # ------------------------------
-# BACKTEST
+# RUN
 # ------------------------------
 def run(df_day, history):
 
@@ -225,10 +221,10 @@ def run(df_day, history):
         p = prob(h, a)
 
         pred = "HOME" if p > 0.5 else "AWAY"
-        real = "HOME" if r["FTR"] == "H" else "AWAY" if r["FTR"] == "A" else "DRAW"
+        real = "HOME" if r.get("FTR") == "H" else "AWAY" if r.get("FTR") == "A" else None
 
         g_pred = goals_pred(h, a)
-        g_real = goals_real(r)
+        g_real = goals_real(r) if real else None
 
         c_pred = corners_pred(h, a)
         c_real = corners_real(r)
@@ -239,7 +235,6 @@ def run(df_day, history):
         rows.append({
             "home": home,
             "away": away,
-
             "pred_win": pred,
             "prob_home": round(p * 100, 2),
 
@@ -247,8 +242,8 @@ def run(df_day, history):
             "corners_market": c_pred,
             "cards_market": ca_pred,
 
-            "correct_win": pred == real,
-            "correct_goals": g_pred == g_real,
+            "correct_win": (pred == real) if real else None,
+            "correct_goals": (g_pred == g_real) if g_real else None,
             "correct_corners": (c_pred == c_real) if c_real else None,
             "correct_cards": (ca_pred == ca_real) if ca_real else None
         })
@@ -257,9 +252,9 @@ def run(df_day, history):
 
 
 # ------------------------------
-# UI (INALTERADA)
+# UI
 # ------------------------------
-st.title("⚽ Backtest Futebol V4.2")
+st.title("⚽ Backtest Futebol V4.3")
 
 date = st.date_input("Selecione a data")
 
@@ -274,23 +269,38 @@ if st.button("Rodar"):
         st.warning("Sem jogos")
         st.stop()
 
+    has_results = df_day["FTR"].notna().any() if "FTR" in df_day else False
+
     res = run(df_day, history)
 
-    acc_win = res["correct_win"].mean() * 100
-    acc_goals = res["correct_goals"].mean() * 100
-    acc_corners = res["correct_corners"].dropna().mean() * 100
-    acc_cards = res["correct_cards"].dropna().mean() * 100
+    # BACKTEST
+    if has_results:
 
-    st.success(f"""
-    🎯 Win: {acc_win:.2f}%  
-    ⚽ Gols: {acc_goals:.2f}%  
-    🚩 Cantos: {acc_corners:.2f}%  
-    🟨 Cartões: {acc_cards:.2f}%  
-    """)
+        st.success("📊 Modo Backtest")
 
-    st.dataframe(res)
+        acc_win = res["correct_win"].dropna().mean() * 100
+        acc_goals = res["correct_goals"].dropna().mean() * 100
+        acc_corners = res["correct_corners"].dropna().mean() * 100
+        acc_cards = res["correct_cards"].dropna().mean() * 100
 
-    res["confidence"] = abs(res["prob_home"] - 50)
+        st.write(f"Win: {acc_win:.2f}%")
+        st.write(f"Gols: {acc_goals:.2f}%")
+        st.write(f"Cantos: {acc_corners:.2f}%")
+        st.write(f"Cartões: {acc_cards:.2f}%")
 
-    st.write("🏆 Ranking")
-    st.dataframe(res.sort_values("confidence", ascending=False))
+        st.dataframe(res)
+
+    # PICKS
+    else:
+
+        st.success("🎯 Modo Picks (Jogos futuros)")
+
+        res["confidence"] = abs(res["prob_home"] - 50)
+
+        strong = res[res["confidence"] >= 10]
+
+        st.write("🔥 Picks Fortes")
+        st.dataframe(strong.sort_values("confidence", ascending=False))
+
+        st.write("📊 Todos os jogos")
+        st.dataframe(res.sort_values("prob_home", ascending=False))
