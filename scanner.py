@@ -9,14 +9,8 @@ import pandas as pd
 # ------------------------------
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# FILTRO DE LIGAS (leve e seguro)
-ALLOWED_KEYWORDS = [
-    "England","Spain","Germany","Italy","France",
-    "Brazil","Portugal","Netherlands","Belgium"
-]
-
 # CACHE
-stats_cache = {}
+team_matches_cache = {}
 
 # ------------------------------
 # PESOS POR LIGA (V4)
@@ -65,23 +59,39 @@ def filter_matches_sp(matches, selected_date):
     return filtered
 
 # ------------------------------
-# BUSCAR STATS (COM CACHE)
+# NOVO: JOGOS DISPUTADOS (RODADAS)
+# ------------------------------
+def get_team_matches_played(team_id):
+
+    if team_id in team_matches_cache:
+        return team_matches_cache[team_id]
+
+    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
+    res = requests.get(url, headers=HEADERS)
+
+    if res.status_code != 200:
+        return 0
+
+    events = res.json().get("events", [])
+
+    finished = [e for e in events if e.get("status", {}).get("type") == "finished"]
+
+    count = len(finished)
+
+    team_matches_cache[team_id] = count
+    return count
+
+# ------------------------------
+# BUSCAR STATS
 # ------------------------------
 def get_match_stats(match_id):
-
-    if match_id in stats_cache:
-        return stats_cache[match_id]
-
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
     res = requests.get(url, headers=HEADERS)
 
     if res.status_code != 200:
         return None
 
-    data = res.json()
-    stats_cache[match_id] = data
-
-    return data
+    return res.json()
 
 # ------------------------------
 # EXTRAIR STATS
@@ -133,13 +143,13 @@ def convert_stats(stats):
     return home, away
 
 # ------------------------------
-# NORMALIZAÇÃO
+# NORMALIZAÇÃO SIMPLES
 # ------------------------------
 def normalize(val, max_val):
     return val / max_val if max_val > 0 else 0
 
 # ------------------------------
-# SCORE
+# SCORE V4
 # ------------------------------
 def calculate_score(home, away, weights):
 
@@ -198,17 +208,11 @@ if st.button("Buscar Jogos"):
     results = []
 
     for match in matches:
-
-        league = match["tournament"]["name"]
-
-        # FILTRO DE LIGA (leve)
-        if not any(k in league for k in ALLOWED_KEYWORDS):
-            continue
-
         match_id = match["id"]
 
         home_name = match["homeTeam"]["name"]
         away_name = match["awayTeam"]["name"]
+        league = match["tournament"]["name"]
 
         weights = LEAGUE_WEIGHTS.get(league, DEFAULT_WEIGHTS)
 
@@ -224,9 +228,16 @@ if st.button("Buscar Jogos"):
 
         score = calculate_score(home, away, weights)
 
-        # filtro anti jogo equilibrado (leve)
-        if abs(score) < 0.15:
-            continue
+        # ------------------------------
+        # NOVO: CALCULAR RODADAS
+        # ------------------------------
+        home_matches = get_team_matches_played(match["homeTeam"]["id"])
+        away_matches = get_team_matches_played(match["awayTeam"]["id"])
+
+        if home_matches and away_matches:
+            rounds = round((home_matches + away_matches) / 2)
+        else:
+            rounds = max(home_matches, away_matches)
 
         winner = home_name if score > 0 else away_name
         classification = classify(abs(score))
@@ -236,14 +247,16 @@ if st.button("Buscar Jogos"):
             "Jogo": f"{home_name} vs {away_name}",
             "Vencedor": winner,
             "Edge": round(score, 2),
+            "Rodadas": rounds,
             "Classificação": classification
         })
 
     if not results:
-        st.warning("Nenhum jogo com estatísticas disponíveis após filtros.")
+        st.warning("Nenhum jogo com estatísticas disponíveis.")
         st.stop()
 
-    df = pd.DataFrame(results).sort_values(by="Edge", ascending=False)
+    df = pd.DataFrame(results)
+    df = df.sort_values(by="Edge", ascending=False)
 
     st.subheader("📊 Resultados do Dia")
 
