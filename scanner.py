@@ -1,78 +1,109 @@
 import streamlit as st
+import requests
 
 # ------------------------------
-# CONFIG POR LIGA (RESUMIDO)
+# CONFIG
 # ------------------------------
-LEAGUE_MODELS = {
-    "Premier League": {"xg_diff":0.5,"sot_diff":0.3,"field_tilt":0.2},
-    "Bundesliga": {"xg_for":0.5,"big_chances":0.3,"sot":0.2},
-    "Serie A": {"xga":0.5,"xg_diff":0.3,"clean_sheet":0.2},
-    "Ligue 1": {"sot_diff":0.45,"xg_diff":0.35,"eff":0.2},
-    "La Liga": {"xg_diff":0.45,"control":0.3,"xga":0.25},
-
-    # Camada 2 exemplo
-    "Brasileirão Série A": {"xg_diff":0.45,"xga":0.35,"sot_diff":0.2},
-    "Championship": {"xg_diff":0.45,"sot_diff":0.3,"big_chances":0.25},
-
-    # Camada 3 genérico
-    "Default": {"xg_diff":0.4,"xga":0.3,"form":0.3}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
 }
 
 # ------------------------------
-# FUNÇÃO DE SCORE
+# PEGAR DADOS DO JOGO
 # ------------------------------
-def calculate_score(stats, weights):
-    score = 0
-    for key, weight in weights.items():
-        value = stats.get(key, 0)
-        if key == "xga":
-            value = -value  # quanto menor melhor
-        score += value * weight
-    return score
+def get_match_data(match_id):
+    url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
+    res = requests.get(url, headers=HEADERS)
+
+    if res.status_code != 200:
+        return None
+
+    data = res.json()
+    return data
 
 # ------------------------------
-# CLASSIFICAÇÃO
+# EXTRAIR ESTATÍSTICAS
 # ------------------------------
-def classify(edge):
-    if edge >= 0.5:
-        return "ELITE"
-    elif edge >= 0.2:
-        return "BOA"
-    else:
-        return "EVITAR"
+def extract_stats(data):
+    stats = {}
+
+    try:
+        groups = data["statistics"][0]["groups"]
+
+        for group in groups:
+            for item in group["statisticsItems"]:
+                name = item["name"]
+                home = item["home"]
+                away = item["away"]
+
+                stats[name] = {"home": home, "away": away}
+
+    except:
+        pass
+
+    return stats
+
+# ------------------------------
+# CONVERTER PARA MODELO
+# ------------------------------
+def convert_to_model(stats):
+    def get(stat):
+        try:
+            return float(stat)
+        except:
+            return 0
+
+    model_home = {
+        "sot": get(stats.get("Shots on target", {}).get("home", 0)),
+        "sot_diff": get(stats.get("Shots on target", {}).get("home", 0)) - get(stats.get("Shots on target", {}).get("away", 0)),
+        "xg": get(stats.get("Expected goals", {}).get("home", 0)),
+        "xga": get(stats.get("Expected goals", {}).get("away", 0)),
+    }
+
+    model_away = {
+        "sot": get(stats.get("Shots on target", {}).get("away", 0)),
+        "sot_diff": get(stats.get("Shots on target", {}).get("away", 0)) - get(stats.get("Shots on target", {}).get("home", 0)),
+        "xg": get(stats.get("Expected goals", {}).get("away", 0)),
+        "xga": get(stats.get("Expected goals", {}).get("home", 0)),
+    }
+
+    return model_home, model_away
+
+# ------------------------------
+# SCORE SIMPLES (V2)
+# ------------------------------
+def calculate_score(team):
+    score = (
+        team["xg"] * 0.5 +
+        team["sot"] * 0.3 -
+        team["xga"] * 0.2
+    )
+    return score
 
 # ------------------------------
 # UI
 # ------------------------------
-st.title("📊 Modelo de Apostas por Liga V1")
+st.title("🔥 Modelo V2 - Auto SofaScore")
 
-league = st.selectbox("Selecione a Liga", list(LEAGUE_MODELS.keys()))
+match_id = st.text_input("ID do jogo (SofaScore)")
 
-st.subheader("📈 Estatísticas Time Casa")
-home_stats = {
-    "xg_diff": st.number_input("xG Diff Casa", value=0.0),
-    "xg_for": st.number_input("xG For Casa", value=0.0),
-    "xga": st.number_input("xGA Casa", value=0.0),
-    "sot_diff": st.number_input("SoT Diff Casa", value=0.0),
-    "sot": st.number_input("SoT Casa", value=0.0),
-    "big_chances": st.number_input("Big Chances Casa", value=0.0),
-    "field_tilt": st.number_input("Field Tilt Casa", value=0.0),
-    "control": st.number_input("Controle Casa", value=0.0),
-    "eff": st.number_input("Eficiência Casa", value=0.0),
-    "clean_sheet": st.number_input("Clean Sheet Casa", value=0.0),
-    "form": st.number_input("Forma Casa", value=0.0)
-}
+if st.button("Buscar e Analisar"):
 
-st.subheader("📉 Estatísticas Visitante")
-away_stats = {
-    "xg_diff": st.number_input("xG Diff Fora", value=0.0),
-    "xg_for": st.number_input("xG For Fora", value=0.0),
-    "xga": st.number_input("xGA Fora", value=0.0),
-    "sot_diff": st.number_input("SoT Diff Fora", value=0.0),
-    "sot": st.number_input("SoT Fora", value=0.0),
-    "big_chances": st.number_input("Big Chances Fora", value=0.0),
-    "field_tilt": st.number_input("Field Tilt Fora", value=0.0),
-    "control": st.number_input("Controle Fora", value=0.0),
-    "eff": st.number_input("Eficiência Fora", value=0.0),
-    "clean_sheet": st.number_input("Clean Sheet Fora", value=0.0),
-    "form": st.number_input("Forma
+    data = get_match_data(match_id)
+
+    if not data:
+        st.error("Erro ao buscar dados")
+    else:
+        stats = extract_stats(data)
+        home, away = convert_to_model(stats)
+
+        home_score = calculate_score(home)
+        away_score = calculate_score(away)
+
+        edge = home_score - away_score
+
+        winner = "Casa" if edge > 0 else "Visitante"
+
+        st.subheader("📊 Resultado")
+        st.write(f"🏆 Vencedor: {winner}")
+        st.write(f"📈 Edge: {round(edge,2)}")
