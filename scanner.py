@@ -94,15 +94,16 @@ def get_match_stats(match_id):
     return res.json()
 
 # ------------------------------
-# NOVO: STATS MÉDIOS (PRÉ-JOGO)
+# NOVO: STATS MÉDIOS (ROBUSTO)
 # ------------------------------
 def get_team_recent_stats(team_id, limit=5):
 
     url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{limit}"
     res = requests.get(url, headers=HEADERS)
 
+    # fallback direto se API falhar
     if res.status_code != 200:
-        return None
+        return {"xg":1.2, "xga":1.2, "sot":4}
 
     events = res.json().get("events", [])
 
@@ -139,8 +140,9 @@ def get_team_recent_stats(team_id, limit=5):
         except:
             continue
 
+    # fallback se não achou dados
     if count == 0:
-        return None
+        return {"xg":1.2, "xga":1.2, "sot":4}
 
     return {
         "xg": xg_total / count,
@@ -273,7 +275,7 @@ if st.button("Buscar Jogos"):
 
         status = match.get("status", {}).get("type")
 
-        # 🔥 PASSADO → stats reais
+        # PASSADO
         if status == "finished":
 
             stats_raw = get_match_stats(match_id)
@@ -286,14 +288,18 @@ if st.button("Buscar Jogos"):
 
             home, away = convert_stats(stats)
 
-        # 🔮 FUTURO → média últimos jogos
+        # FUTURO
         else:
 
             home = get_team_recent_stats(match["homeTeam"]["id"])
             away = get_team_recent_stats(match["awayTeam"]["id"])
 
-            if not home or not away:
-                continue
+        # GARANTIA (nunca quebra)
+        if not home:
+            home = {"xg":1.2, "xga":1.2, "sot":4}
+
+        if not away:
+            away = {"xg":1.2, "xga":1.2, "sot":4}
 
         score = calculate_score(home, away, weights)
 
