@@ -4,21 +4,13 @@ from datetime import datetime
 import pytz
 import pandas as pd
 
+# ------------------------------
+# CONFIG
+# ------------------------------
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # ------------------------------
-# FILTRO FLEXÍVEL DE LIGAS
-# ------------------------------
-ALLOWED_KEYWORDS = [
-    "England","Spain","Germany","Italy","France",
-    "Brazil","Portugal","Netherlands","Belgium"
-]
-
-league_cache = {}
-team_cache = {}
-
-# ------------------------------
-# PESOS POR LIGA
+# PESOS POR LIGA (V4)
 # ------------------------------
 LEAGUE_WEIGHTS = {
     "Premier League": {"xg":0.5,"sot":0.3,"xga":0.2},
@@ -31,208 +23,178 @@ LEAGUE_WEIGHTS = {
 DEFAULT_WEIGHTS = {"xg":0.45,"sot":0.3,"xga":0.25}
 
 # ------------------------------
-# BUSCAR JOGOS
+# BUSCAR JOGOS DO DIA
 # ------------------------------
 def get_matches_by_date(date):
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date.strftime('%Y-%m-%d')}"
+    date_str = date.strftime("%Y-%m-%d")
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
     res = requests.get(url, headers=HEADERS)
+
     if res.status_code != 200:
         return []
+
     return res.json().get("events", [])
 
 # ------------------------------
-# FILTRO SP
+# FILTRO SÃO PAULO
 # ------------------------------
 def filter_matches_sp(matches, selected_date):
     tz_sp = pytz.timezone("America/Sao_Paulo")
     filtered = []
 
-    for m in matches:
-        ts = m.get("startTimestamp")
+    for match in matches:
+        ts = match.get("startTimestamp")
         if not ts:
             continue
 
-        dt = datetime.utcfromtimestamp(ts).replace(tzinfo=pytz.utc).astimezone(tz_sp)
+        utc = datetime.utcfromtimestamp(ts).replace(tzinfo=pytz.utc)
+        sp = utc.astimezone(tz_sp)
 
-        if dt.date() == selected_date:
-            filtered.append(m)
+        if sp.date() == selected_date:
+            filtered.append(match)
 
     return filtered
 
 # ------------------------------
-# FILTRO LIGA + CACHE
-# ------------------------------
-def is_valid_league(match):
-
-    league_name = match["tournament"]["name"]
-
-    if not any(k in league_name for k in ALLOWED_KEYWORDS):
-        return False
-
-    try:
-        tournament_id = match["tournament"]["uniqueTournament"]["id"]
-    except:
-        return False
-
-    if tournament_id in league_cache:
-        return league_cache[tournament_id]
-
-    url = f"https://api.sofascore.com/api/v1/unique-tournament/{tournament_id}/events/last/0"
-    res = requests.get(url, headers=HEADERS)
-
-    if res.status_code != 200:
-        league_cache[tournament_id] = True
-        return True
-
-    data = res.json().get("events", [])
-    finished = [e for e in data if e.get("status", {}).get("type") == "finished"]
-
-    valid = len(finished) >= 10
-    league_cache[tournament_id] = valid
-
-    return valid
-
-# ------------------------------
-# STATS JOGO
+# BUSCAR STATS
 # ------------------------------
 def get_match_stats(match_id):
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
     res = requests.get(url, headers=HEADERS)
+
     if res.status_code != 200:
         return None
+
     return res.json()
 
+# ------------------------------
+# EXTRAIR STATS
+# ------------------------------
 def extract_stats(data):
     stats = {}
+
     try:
-        for g in data["statistics"][0]["groups"]:
-            for i in g["statisticsItems"]:
-                stats[i["name"]] = {"home": i["home"], "away": i["away"]}
+        groups = data["statistics"][0]["groups"]
+        for group in groups:
+            for item in group["statisticsItems"]:
+                stats[item["name"]] = {
+                    "home": item["home"],
+                    "away": item["away"]
+                }
     except:
         pass
+
     return stats
 
+# ------------------------------
+# CONVERTER + DIFERENÇA
+# ------------------------------
 def convert_stats(stats):
-    def v(x):
-        try: return float(x)
-        except: return 0
+    def val(x):
+        try:
+            return float(x)
+        except:
+            return 0
 
-    hxg = v(stats.get("Expected goals", {}).get("home", 0))
-    axg = v(stats.get("Expected goals", {}).get("away", 0))
+    home_xg = val(stats.get("Expected goals", {}).get("home", 0))
+    away_xg = val(stats.get("Expected goals", {}).get("away", 0))
 
-    hsot = v(stats.get("Shots on target", {}).get("home", 0))
-    asot = v(stats.get("Shots on target", {}).get("away", 0))
+    home_sot = val(stats.get("Shots on target", {}).get("home", 0))
+    away_sot = val(stats.get("Shots on target", {}).get("away", 0))
 
-    return (
-        {"xg":hxg,"xga":axg,"sot":hsot},
-        {"xg":axg,"xga":hxg,"sot":asot}
-    )
-
-# ------------------------------
-# FORMA RECENTE (ÚLTIMOS JOGOS)
-# ------------------------------
-def get_team_form(team_id):
-
-    if team_id in team_cache:
-        return team_cache[team_id]
-
-    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
-    res = requests.get(url, headers=HEADERS)
-
-    if res.status_code != 200:
-        return {"xg":0,"xga":0,"sot":0}
-
-    events = res.json().get("events", [])[:5]
-
-    xg_total = 0
-    xga_total = 0
-    sot_total = 0
-    count = 0
-
-    for e in events:
-        if e.get("status", {}).get("type") != "finished":
-            continue
-
-        stats_raw = get_match_stats(e["id"])
-        if not stats_raw:
-            continue
-
-        stats = extract_stats(stats_raw)
-        if not stats:
-            continue
-
-        home = e["homeTeam"]["id"] == team_id
-
-        hxg, axg = convert_stats(stats)
-
-        if home:
-            xg_total += hxg["xg"]
-            xga_total += hxg["xga"]
-            sot_total += hxg["sot"]
-        else:
-            xg_total += axg["xg"]
-            xga_total += axg["xga"]
-            sot_total += axg["sot"]
-
-        count += 1
-
-    if count == 0:
-        return {"xg":0,"xga":0,"sot":0}
-
-    form = {
-        "xg": xg_total / count,
-        "xga": xga_total / count,
-        "sot": sot_total / count
+    home = {
+        "xg": home_xg,
+        "xga": away_xg,
+        "sot": home_sot
     }
 
-    team_cache[team_id] = form
-    return form
+    away = {
+        "xg": away_xg,
+        "xga": home_xg,
+        "sot": away_sot
+    }
+
+    return home, away
 
 # ------------------------------
-# SCORE V5
+# NORMALIZAÇÃO SIMPLES
 # ------------------------------
-def normalize(v, m): return v/m if m>0 else 0
+def normalize(val, max_val):
+    return val / max_val if max_val > 0 else 0
 
-def calculate_score(home, away, home_form, away_form, w):
+# ------------------------------
+# SCORE V4 (COM DIFERENÇA)
+# ------------------------------
+def calculate_score(home, away, weights):
 
-    xg = (home["xg"] - away["xg"]) + (home_form["xg"] - away_form["xg"])
-    sot = (home["sot"] - away["sot"]) + (home_form["sot"] - away_form["sot"])
-    xga = (away["xga"] - home["xga"]) + (away_form["xga"] - home_form["xga"])
+    # diferenças
+    xg_diff = home["xg"] - away["xg"]
+    sot_diff = home["sot"] - away["sot"]
+    xga_diff = away["xga"] - home["xga"]
 
-    xg = normalize(xg, 5)
-    sot = normalize(sot, 15)
-    xga = normalize(xga, 5)
+    # normalização leve
+    xg_diff = normalize(xg_diff, 3)
+    sot_diff = normalize(sot_diff, 10)
+    xga_diff = normalize(xga_diff, 3)
 
-    return xg*w["xg"] + sot*w["sot"] + xga*w["xga"]
+    score = (
+        xg_diff * weights["xg"] +
+        sot_diff * weights["sot"] +
+        xga_diff * weights["xga"]
+    )
 
-def classify(e):
-    if e>=0.7: return "ELITE"
-    elif e>=0.35: return "BOA"
-    return "EVITAR"
+    return score
+
+# ------------------------------
+# CLASSIFICAÇÃO MELHORADA
+# ------------------------------
+def classify(edge):
+    if edge >= 0.6:
+        return "ELITE"
+    elif edge >= 0.3:
+        return "BOA"
+    else:
+        return "EVITAR"
 
 # ------------------------------
 # UI
 # ------------------------------
-st.title("🔥 Scanner V5 - Jogos do Dia")
+st.title("🔥 Scanner V3 - Jogos do Dia (SofaScore)")
 
-date = st.date_input("Selecione a data")
+selected_date = st.date_input("Selecione a data")
 
 if st.button("Buscar Jogos"):
 
-    matches = get_matches_by_date(date)
-    matches = filter_matches_sp(matches, date)
+    st.write("🔎 Buscando jogos...")
+
+    matches = get_matches_by_date(selected_date)
+
+    if not matches:
+        st.warning("Nenhum jogo retornado pela API.")
+        st.stop()
+
+    st.write(f"Total jogos API: {len(matches)}")
+
+    matches = filter_matches_sp(matches, selected_date)
+
+    st.write(f"Jogos após filtro SP: {len(matches)}")
+
+    if not matches:
+        st.warning("Nenhum jogo após filtro de fuso horário.")
+        st.stop()
 
     results = []
 
-    for m in matches:
+    for match in matches:
+        match_id = match["id"]
 
-        if not is_valid_league(m):
-            continue
+        home_name = match["homeTeam"]["name"]
+        away_name = match["awayTeam"]["name"]
+        league = match["tournament"]["name"]
 
-        league = m["tournament"]["name"]
         weights = LEAGUE_WEIGHTS.get(league, DEFAULT_WEIGHTS)
 
-        stats_raw = get_match_stats(m["id"])
+        stats_raw = get_match_stats(match_id)
         if not stats_raw:
             continue
 
@@ -242,32 +204,32 @@ if st.button("Buscar Jogos"):
 
         home, away = convert_stats(stats)
 
-        home_form = get_team_form(m["homeTeam"]["id"])
-        away_form = get_team_form(m["awayTeam"]["id"])
+        score = calculate_score(home, away, weights)
 
-        score = calculate_score(home, away, home_form, away_form, weights)
-
-        # filtro anti empate
-        if abs(score) < 0.15:
-            continue
-
-        winner = m["homeTeam"]["name"] if score > 0 else m["awayTeam"]["name"]
+        winner = home_name if score > 0 else away_name
+        classification = classify(abs(score))
 
         results.append({
             "Liga": league,
-            "Jogo": f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}",
+            "Jogo": f"{home_name} vs {away_name}",
             "Vencedor": winner,
             "Edge": round(score, 2),
-            "Classificação": classify(abs(score))
+            "Classificação": classification
         })
 
     if not results:
-        st.warning("Nenhum jogo válido encontrado.")
+        st.warning("Nenhum jogo com estatísticas disponíveis.")
         st.stop()
 
-    df = pd.DataFrame(results).sort_values(by="Edge", ascending=False)
+    df = pd.DataFrame(results)
+    df = df.sort_values(by="Edge", ascending=False)
 
-    filtro = st.selectbox("Filtrar por nível", ["Todos","ELITE","BOA","EVITAR"])
+    st.subheader("📊 Resultados do Dia")
+
+    filtro = st.selectbox(
+        "Filtrar por nível",
+        ["Todos", "ELITE", "BOA", "EVITAR"]
+    )
 
     if filtro != "Todos":
         df = df[df["Classificação"] == filtro]
