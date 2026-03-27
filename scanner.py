@@ -9,11 +9,10 @@ import pandas as pd
 # ------------------------------
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# CACHE
 team_matches_cache = {}
 
 # ------------------------------
-# 🔥 FILTRO DE LIGAS (OTIMIZADO)
+# FILTRO DE LIGAS
 # ------------------------------
 ALLOWED_LEAGUES = [
     "Brasileirão Betano","Brasileirão Série B",
@@ -53,7 +52,7 @@ ALLOWED_LEAGUES = [
 ]
 
 # ------------------------------
-# PESOS POR LIGA
+# PESOS
 # ------------------------------
 LEAGUE_WEIGHTS = {
     "Premier League": {"xg":0.5,"sot":0.3,"xga":0.2},
@@ -90,9 +89,9 @@ def filter_matches(matches, selected_date):
         if not ts:
             continue
 
-        league = match["tournament"]["name"]
+        league = match.get("tournament", {}).get("uniqueTournament", {}).get("name", "")
 
-        # 🔥 FILTRO DE LIGA (ANTES DE TUDO)
+        # FILTRO DE LIGA
         if league not in ALLOWED_LEAGUES:
             continue
 
@@ -126,7 +125,7 @@ def get_team_matches_played(team_id):
     return count
 
 # ------------------------------
-# STATS JOGO
+# STATS
 # ------------------------------
 def get_match_stats(match_id):
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
@@ -137,9 +136,6 @@ def get_match_stats(match_id):
 
     return res.json()
 
-# ------------------------------
-# STATS MÉDIOS (ROBUSTO)
-# ------------------------------
 def get_team_recent_stats(team_id, limit=5):
 
     url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{limit}"
@@ -193,7 +189,7 @@ def get_team_recent_stats(team_id, limit=5):
     }
 
 # ------------------------------
-# EXTRAIR
+# PROCESSAMENTO
 # ------------------------------
 def extract_stats(data):
     stats = {}
@@ -211,9 +207,6 @@ def extract_stats(data):
 
     return stats
 
-# ------------------------------
-# CONVERTER
-# ------------------------------
 def convert_stats(stats):
     def val(x):
         try:
@@ -232,9 +225,6 @@ def convert_stats(stats):
 
     return home, away
 
-# ------------------------------
-# SCORE
-# ------------------------------
 def normalize(val, max_val):
     return val / max_val if max_val > 0 else 0
 
@@ -276,9 +266,11 @@ if st.button("Buscar Jogos"):
     results = []
 
     for match in matches:
+
+        league = match.get("tournament", {}).get("uniqueTournament", {}).get("name", "")
+
         home_name = match["homeTeam"]["name"]
         away_name = match["awayTeam"]["name"]
-        league = match["tournament"]["name"]
 
         weights = LEAGUE_WEIGHTS.get(league, DEFAULT_WEIGHTS)
 
