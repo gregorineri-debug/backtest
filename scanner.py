@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 # ------------------------------
@@ -9,23 +9,12 @@ import pytz
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # ------------------------------
-# CONVERTER DATA PARA UTC (SOFASCORE)
-# ------------------------------
-def get_timestamp_range(selected_date):
-    tz_sp = pytz.timezone("America/Sao_Paulo")
-
-    start = tz_sp.localize(datetime.combine(selected_date, datetime.min.time()))
-    end = tz_sp.localize(datetime.combine(selected_date, datetime.max.time()))
-
-    return int(start.timestamp()), int(end.timestamp())
-
-# ------------------------------
-# BUSCAR JOGOS DO DIA
+# BUSCAR JOGOS DO DIA (CORRETO)
 # ------------------------------
 def get_matches_by_date(date):
-    start_ts, end_ts = get_timestamp_range(date)
+    date_str = date.strftime("%Y-%m-%d")
 
-    url = f"https://api.sofascore.com/api/v1/sport/football/events/{start_ts}/{end_ts}"
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
     res = requests.get(url, headers=HEADERS)
 
     if res.status_code != 200:
@@ -33,6 +22,27 @@ def get_matches_by_date(date):
 
     data = res.json()
     return data.get("events", [])
+
+# ------------------------------
+# FILTRO FUSO SÃO PAULO
+# ------------------------------
+def filter_matches_sp(matches, selected_date):
+    tz_sp = pytz.timezone("America/Sao_Paulo")
+    filtered = []
+
+    for match in matches:
+        ts = match.get("startTimestamp")
+
+        if not ts:
+            continue
+
+        match_time_utc = datetime.utcfromtimestamp(ts).replace(tzinfo=pytz.utc)
+        match_time_sp = match_time_utc.astimezone(tz_sp)
+
+        if match_time_sp.date() == selected_date:
+            filtered.append(match)
+
+    return filtered
 
 # ------------------------------
 # BUSCAR ESTATÍSTICAS
@@ -91,7 +101,7 @@ def convert_stats(stats):
     return home, away
 
 # ------------------------------
-# SCORE (VERSÃO MELHORADA)
+# SCORE
 # ------------------------------
 def calculate_score(team):
     return (
@@ -120,7 +130,24 @@ selected_date = st.date_input("Selecione a data")
 
 if st.button("Buscar Jogos"):
 
+    st.write("🔎 Buscando jogos...")
+
     matches = get_matches_by_date(selected_date)
+
+    if not matches:
+        st.warning("Nenhum jogo retornado pela API.")
+        st.stop()
+
+    # DEBUG
+    st.write(f"Total jogos API: {len(matches)}")
+
+    matches = filter_matches_sp(matches, selected_date)
+
+    st.write(f"Jogos após filtro SP: {len(matches)}")
+
+    if not matches:
+        st.warning("Nenhum jogo após filtro de fuso horário.")
+        st.stop()
 
     results = []
 
@@ -137,6 +164,10 @@ if st.button("Buscar Jogos"):
             continue
 
         stats = extract_stats(stats_raw)
+
+        if not stats:
+            continue
+
         home, away = convert_stats(stats)
 
         home_score = calculate_score(home)
@@ -155,13 +186,14 @@ if st.button("Buscar Jogos"):
             "Classificação": classification
         })
 
-    # ------------------------------
-    # MOSTRAR RESULTADOS
-    # ------------------------------
-    st.subheader("📊 Resultados do Dia")
+    if not results:
+        st.warning("Nenhum jogo com estatísticas disponíveis.")
+        st.stop()
 
-    # ordenar por edge
+    # ordenar
     results = sorted(results, key=lambda x: abs(x["Edge"]), reverse=True)
+
+    st.subheader("📊 Resultados do Dia")
 
     for r in results:
         st.write(f"""
