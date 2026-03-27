@@ -13,20 +13,60 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 team_matches_cache = {}
 
 # ------------------------------
-# PESOS POR LIGA (V4)
+# 🔥 FILTRO DE LIGAS (OTIMIZADO)
+# ------------------------------
+ALLOWED_LEAGUES = [
+    "Brasileirão Betano","Brasileirão Série B",
+    "Premier League","Championship",
+    "La Liga","La Liga 2",
+    "Bundesliga","2. Bundesliga",
+    "Serie A","Serie B",
+    "Ligue 1","Ligue 2",
+    "Saudi Pro League",
+    "Liga Profesional de Fútbol","Primera Nacional",
+    "Austrian Bundesliga",
+    "Pro League",
+    "Parva Liga",
+    "Czech First League",
+    "Liga de Primera",
+    "Primera A, Apertura","Primera A, Finalización",
+    "HNL",
+    "Danish Superliga",
+    "Egyptian Premier League",
+    "Scottish Premiership",
+    "MLS",
+    "Stoiximan Super League",
+    "VriendenLoterij Eredivisie","Eerste Divisie",
+    "Premier Division",
+    "Botola Pro",
+    "Liga MX, Apertura","Liga MX, Clausura",
+    "Eliteserien",
+    "Primera División, Apertura","Primera División, Clausura",
+    "Liga 1",
+    "Ekstraklasa",
+    "Liga Portugal Betclic","Liga Portugal 2",
+    "Romanian SuperLiga",
+    "Allsvenskan",
+    "Swiss Super League",
+    "Trendyol Super Lig",
+    "Liga AUF Uruguaya"
+]
+
+# ------------------------------
+# PESOS POR LIGA
 # ------------------------------
 LEAGUE_WEIGHTS = {
     "Premier League": {"xg":0.5,"sot":0.3,"xga":0.2},
     "Bundesliga": {"xg":0.55,"sot":0.25,"xga":0.2},
     "Serie A": {"xg":0.35,"sot":0.25,"xga":0.4},
-    "LaLiga": {"xg":0.45,"sot":0.25,"xga":0.3},
+    "La Liga": {"xg":0.45,"sot":0.25,"xga":0.3},
     "Ligue 1": {"xg":0.4,"sot":0.35,"xga":0.25},
 }
 
 DEFAULT_WEIGHTS = {"xg":0.45,"sot":0.3,"xga":0.25}
 
 # ------------------------------
-# BUSCAR JOGOS DO DIA
+# BUSCAR JOGOS
 # ------------------------------
 def get_matches_by_date(date):
     date_str = date.strftime("%Y-%m-%d")
@@ -39,15 +79,21 @@ def get_matches_by_date(date):
     return res.json().get("events", [])
 
 # ------------------------------
-# FILTRO SÃO PAULO
+# FILTRO SP + LIGA
 # ------------------------------
-def filter_matches_sp(matches, selected_date):
+def filter_matches(matches, selected_date):
     tz_sp = pytz.timezone("America/Sao_Paulo")
     filtered = []
 
     for match in matches:
         ts = match.get("startTimestamp")
         if not ts:
+            continue
+
+        league = match["tournament"]["name"]
+
+        # 🔥 FILTRO DE LIGA (ANTES DE TUDO)
+        if league not in ALLOWED_LEAGUES:
             continue
 
         utc = datetime.utcfromtimestamp(ts).replace(tzinfo=pytz.utc)
@@ -59,7 +105,7 @@ def filter_matches_sp(matches, selected_date):
     return filtered
 
 # ------------------------------
-# JOGOS DISPUTADOS (RODADAS)
+# RODADAS
 # ------------------------------
 def get_team_matches_played(team_id):
 
@@ -73,16 +119,14 @@ def get_team_matches_played(team_id):
         return 0
 
     events = res.json().get("events", [])
-
     finished = [e for e in events if e.get("status", {}).get("type") == "finished"]
 
     count = len(finished)
-
     team_matches_cache[team_id] = count
     return count
 
 # ------------------------------
-# BUSCAR STATS DO JOGO
+# STATS JOGO
 # ------------------------------
 def get_match_stats(match_id):
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
@@ -94,16 +138,15 @@ def get_match_stats(match_id):
     return res.json()
 
 # ------------------------------
-# NOVO: STATS MÉDIOS (ROBUSTO)
+# STATS MÉDIOS (ROBUSTO)
 # ------------------------------
 def get_team_recent_stats(team_id, limit=5):
 
     url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{limit}"
     res = requests.get(url, headers=HEADERS)
 
-    # fallback direto se API falhar
     if res.status_code != 200:
-        return {"xg":1.2, "xga":1.2, "sot":4}
+        return {"xg":1.2,"xga":1.2,"sot":4}
 
     events = res.json().get("events", [])
 
@@ -140,9 +183,8 @@ def get_team_recent_stats(team_id, limit=5):
         except:
             continue
 
-    # fallback se não achou dados
     if count == 0:
-        return {"xg":1.2, "xga":1.2, "sot":4}
+        return {"xg":1.2,"xga":1.2,"sot":4}
 
     return {
         "xg": xg_total / count,
@@ -151,7 +193,7 @@ def get_team_recent_stats(team_id, limit=5):
     }
 
 # ------------------------------
-# EXTRAIR STATS
+# EXTRAIR
 # ------------------------------
 def extract_stats(data):
     stats = {}
@@ -185,38 +227,21 @@ def convert_stats(stats):
     home_sot = val(stats.get("Shots on target", {}).get("home", 0))
     away_sot = val(stats.get("Shots on target", {}).get("away", 0))
 
-    home = {
-        "xg": home_xg,
-        "xga": away_xg,
-        "sot": home_sot
-    }
-
-    away = {
-        "xg": away_xg,
-        "xga": home_xg,
-        "sot": away_sot
-    }
+    home = {"xg": home_xg, "xga": away_xg, "sot": home_sot}
+    away = {"xg": away_xg, "xga": home_xg, "sot": away_sot}
 
     return home, away
 
 # ------------------------------
-# NORMALIZAÇÃO
+# SCORE
 # ------------------------------
 def normalize(val, max_val):
     return val / max_val if max_val > 0 else 0
 
-# ------------------------------
-# SCORE V4
-# ------------------------------
 def calculate_score(home, away, weights):
-
-    xg_diff = home["xg"] - away["xg"]
-    sot_diff = home["sot"] - away["sot"]
-    xga_diff = away["xga"] - home["xga"]
-
-    xg_diff = normalize(xg_diff, 3)
-    sot_diff = normalize(sot_diff, 10)
-    xga_diff = normalize(xga_diff, 3)
+    xg_diff = normalize(home["xg"] - away["xg"], 3)
+    sot_diff = normalize(home["sot"] - away["sot"], 10)
+    xga_diff = normalize(away["xga"] - home["xga"], 3)
 
     return (
         xg_diff * weights["xg"] +
@@ -224,9 +249,6 @@ def calculate_score(home, away, weights):
         xga_diff * weights["xga"]
     )
 
-# ------------------------------
-# CLASSIFICAÇÃO
-# ------------------------------
 def classify(edge):
     if edge >= 0.6:
         return "ELITE"
@@ -238,82 +260,39 @@ def classify(edge):
 # ------------------------------
 # UI
 # ------------------------------
-st.title("🔥 Scanner V3 - Jogos do Dia (SofaScore)")
+st.title("🔥 Scanner V3 - Jogos do Dia")
 
 selected_date = st.date_input("Selecione a data")
 
 if st.button("Buscar Jogos"):
 
-    st.write("🔎 Buscando jogos...")
-
     matches = get_matches_by_date(selected_date)
+    matches = filter_matches(matches, selected_date)
 
     if not matches:
-        st.warning("Nenhum jogo retornado pela API.")
-        st.stop()
-
-    st.write(f"Total jogos API: {len(matches)}")
-
-    matches = filter_matches_sp(matches, selected_date)
-
-    st.write(f"Jogos após filtro SP: {len(matches)}")
-
-    if not matches:
-        st.warning("Nenhum jogo após filtro de fuso horário.")
+        st.warning("Nenhum jogo encontrado nas ligas filtradas.")
         st.stop()
 
     results = []
 
     for match in matches:
-        match_id = match["id"]
-
         home_name = match["homeTeam"]["name"]
         away_name = match["awayTeam"]["name"]
         league = match["tournament"]["name"]
 
         weights = LEAGUE_WEIGHTS.get(league, DEFAULT_WEIGHTS)
 
-        status = match.get("status", {}).get("type")
-
-        # PASSADO
-        if status == "finished":
-
-            stats_raw = get_match_stats(match_id)
-            if not stats_raw:
-                continue
-
-            stats = extract_stats(stats_raw)
-            if not stats:
-                continue
-
-            home, away = convert_stats(stats)
-
-        # FUTURO
-        else:
-
-            home = get_team_recent_stats(match["homeTeam"]["id"])
-            away = get_team_recent_stats(match["awayTeam"]["id"])
-
-        # GARANTIA (nunca quebra)
-        if not home:
-            home = {"xg":1.2, "xga":1.2, "sot":4}
-
-        if not away:
-            away = {"xg":1.2, "xga":1.2, "sot":4}
+        home = get_team_recent_stats(match["homeTeam"]["id"])
+        away = get_team_recent_stats(match["awayTeam"]["id"])
 
         score = calculate_score(home, away, weights)
 
-        # RODADAS
-        home_matches = get_team_matches_played(match["homeTeam"]["id"])
-        away_matches = get_team_matches_played(match["awayTeam"]["id"])
-
-        if home_matches and away_matches:
-            rounds = round((home_matches + away_matches) / 2)
-        else:
-            rounds = max(home_matches, away_matches)
+        rounds = max(
+            get_team_matches_played(match["homeTeam"]["id"]),
+            get_team_matches_played(match["awayTeam"]["id"])
+        )
 
         winner = home_name if score > 0 else away_name
-        classification = classify(abs(score))
 
         results.append({
             "Liga": league,
@@ -321,24 +300,9 @@ if st.button("Buscar Jogos"):
             "Vencedor": winner,
             "Edge": round(score, 2),
             "Rodadas": rounds,
-            "Classificação": classification
+            "Classificação": classify(abs(score))
         })
 
-    if not results:
-        st.warning("Nenhum jogo com estatísticas disponíveis.")
-        st.stop()
-
-    df = pd.DataFrame(results)
-    df = df.sort_values(by="Edge", ascending=False)
-
-    st.subheader("📊 Resultados do Dia")
-
-    filtro = st.selectbox(
-        "Filtrar por nível",
-        ["Todos", "ELITE", "BOA", "EVITAR"]
-    )
-
-    if filtro != "Todos":
-        df = df[df["Classificação"] == filtro]
+    df = pd.DataFrame(results).sort_values(by="Edge", ascending=False)
 
     st.dataframe(df, use_container_width=True)
