@@ -7,7 +7,7 @@ import pandas as pd
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # ------------------------------
-# LIGAS PERMITIDAS (SUA LISTA)
+# LIGAS PERMITIDAS
 # ------------------------------
 ALLOWED_LEAGUES = [
     "Premier League","Championship",
@@ -62,7 +62,7 @@ def filter_matches_sp(matches, selected_date):
     return filtered
 
 # ------------------------------
-# FILTRO LIGAS + MIN 10 JOGOS
+# FILTRO LIGA + MIN 10 JOGOS
 # ------------------------------
 def is_valid_league(match):
 
@@ -71,7 +71,10 @@ def is_valid_league(match):
     if league_name not in ALLOWED_LEAGUES:
         return False
 
-    tournament_id = match["tournament"]["uniqueTournament"]["id"]
+    try:
+        tournament_id = match["tournament"]["uniqueTournament"]["id"]
+    except:
+        return False
 
     url = f"https://api.sofascore.com/api/v1/unique-tournament/{tournament_id}/events/last/0"
     res = requests.get(url, headers=HEADERS)
@@ -122,7 +125,7 @@ def convert_stats(stats):
     )
 
 # ------------------------------
-# SCORE V4
+# SCORE
 # ------------------------------
 def normalize(v, m): return v/m if m>0 else 0
 
@@ -172,17 +175,30 @@ if st.button("Buscar Jogos"):
 
         score = calculate_score(home, away, weights)
 
-        winner = m["homeTeam"]["name"] if score>0 else m["awayTeam"]["name"]
+        winner = m["homeTeam"]["name"] if score > 0 else m["awayTeam"]["name"]
 
         results.append({
             "Liga": league,
             "Jogo": f"{m['homeTeam']['name']} vs {m['awayTeam']['name']}",
             "Vencedor": winner,
-            "Edge": round(score,2),
+            "Edge": round(score, 2),
             "Classificação": classify(abs(score))
         })
 
-    df = pd.DataFrame(results).sort_values(by="Edge", ascending=False)
+    # ------------------------------
+    # PROTEÇÃO CONTRA ERRO
+    # ------------------------------
+    if not results:
+        st.warning("Nenhum jogo válido encontrado após filtros.")
+        st.stop()
+
+    df = pd.DataFrame(results)
+
+    if "Edge" not in df.columns:
+        st.warning("Erro ao montar dados (Edge não encontrado).")
+        st.stop()
+
+    df = df.sort_values(by="Edge", ascending=False)
 
     filtro = st.selectbox("Filtrar por nível", ["Todos","ELITE","BOA","EVITAR"])
 
