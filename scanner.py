@@ -9,6 +9,15 @@ import pandas as pd
 # ------------------------------
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
+# FILTRO DE LIGAS (leve e seguro)
+ALLOWED_KEYWORDS = [
+    "England","Spain","Germany","Italy","France",
+    "Brazil","Portugal","Netherlands","Belgium"
+]
+
+# CACHE
+stats_cache = {}
+
 # ------------------------------
 # PESOS POR LIGA (V4)
 # ------------------------------
@@ -56,16 +65,23 @@ def filter_matches_sp(matches, selected_date):
     return filtered
 
 # ------------------------------
-# BUSCAR STATS
+# BUSCAR STATS (COM CACHE)
 # ------------------------------
 def get_match_stats(match_id):
+
+    if match_id in stats_cache:
+        return stats_cache[match_id]
+
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
     res = requests.get(url, headers=HEADERS)
 
     if res.status_code != 200:
         return None
 
-    return res.json()
+    data = res.json()
+    stats_cache[match_id] = data
+
+    return data
 
 # ------------------------------
 # EXTRAIR STATS
@@ -117,36 +133,32 @@ def convert_stats(stats):
     return home, away
 
 # ------------------------------
-# NORMALIZAÇÃO SIMPLES
+# NORMALIZAÇÃO
 # ------------------------------
 def normalize(val, max_val):
     return val / max_val if max_val > 0 else 0
 
 # ------------------------------
-# SCORE V4 (COM DIFERENÇA)
+# SCORE
 # ------------------------------
 def calculate_score(home, away, weights):
 
-    # diferenças
     xg_diff = home["xg"] - away["xg"]
     sot_diff = home["sot"] - away["sot"]
     xga_diff = away["xga"] - home["xga"]
 
-    # normalização leve
     xg_diff = normalize(xg_diff, 3)
     sot_diff = normalize(sot_diff, 10)
     xga_diff = normalize(xga_diff, 3)
 
-    score = (
+    return (
         xg_diff * weights["xg"] +
         sot_diff * weights["sot"] +
         xga_diff * weights["xga"]
     )
 
-    return score
-
 # ------------------------------
-# CLASSIFICAÇÃO MELHORADA
+# CLASSIFICAÇÃO
 # ------------------------------
 def classify(edge):
     if edge >= 0.6:
@@ -186,11 +198,17 @@ if st.button("Buscar Jogos"):
     results = []
 
     for match in matches:
+
+        league = match["tournament"]["name"]
+
+        # FILTRO DE LIGA (leve)
+        if not any(k in league for k in ALLOWED_KEYWORDS):
+            continue
+
         match_id = match["id"]
 
         home_name = match["homeTeam"]["name"]
         away_name = match["awayTeam"]["name"]
-        league = match["tournament"]["name"]
 
         weights = LEAGUE_WEIGHTS.get(league, DEFAULT_WEIGHTS)
 
@@ -206,6 +224,10 @@ if st.button("Buscar Jogos"):
 
         score = calculate_score(home, away, weights)
 
+        # filtro anti jogo equilibrado (leve)
+        if abs(score) < 0.15:
+            continue
+
         winner = home_name if score > 0 else away_name
         classification = classify(abs(score))
 
@@ -218,11 +240,10 @@ if st.button("Buscar Jogos"):
         })
 
     if not results:
-        st.warning("Nenhum jogo com estatísticas disponíveis.")
+        st.warning("Nenhum jogo com estatísticas disponíveis após filtros.")
         st.stop()
 
-    df = pd.DataFrame(results)
-    df = df.sort_values(by="Edge", ascending=False)
+    df = pd.DataFrame(results).sort_values(by="Edge", ascending=False)
 
     st.subheader("📊 Resultados do Dia")
 
