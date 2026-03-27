@@ -59,7 +59,7 @@ def filter_matches_sp(matches, selected_date):
     return filtered
 
 # ------------------------------
-# NOVO: JOGOS DISPUTADOS (RODADAS)
+# JOGOS DISPUTADOS (RODADAS)
 # ------------------------------
 def get_team_matches_played(team_id):
 
@@ -82,7 +82,7 @@ def get_team_matches_played(team_id):
     return count
 
 # ------------------------------
-# BUSCAR STATS
+# BUSCAR STATS DO JOGO
 # ------------------------------
 def get_match_stats(match_id):
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
@@ -92,6 +92,61 @@ def get_match_stats(match_id):
         return None
 
     return res.json()
+
+# ------------------------------
+# NOVO: STATS MÉDIOS (PRÉ-JOGO)
+# ------------------------------
+def get_team_recent_stats(team_id, limit=5):
+
+    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{limit}"
+    res = requests.get(url, headers=HEADERS)
+
+    if res.status_code != 200:
+        return None
+
+    events = res.json().get("events", [])
+
+    xg_total = 0
+    xga_total = 0
+    sot_total = 0
+    count = 0
+
+    for e in events:
+        if e.get("status", {}).get("type") != "finished":
+            continue
+
+        try:
+            stats = get_match_stats(e["id"])
+            if not stats:
+                continue
+
+            extracted = extract_stats(stats)
+            if not extracted:
+                continue
+
+            home, away = convert_stats(extracted)
+
+            if e["homeTeam"]["id"] == team_id:
+                xg_total += home["xg"]
+                xga_total += home["xga"]
+                sot_total += home["sot"]
+            else:
+                xg_total += away["xg"]
+                xga_total += away["xga"]
+                sot_total += away["sot"]
+
+            count += 1
+        except:
+            continue
+
+    if count == 0:
+        return None
+
+    return {
+        "xg": xg_total / count,
+        "xga": xga_total / count,
+        "sot": sot_total / count
+    }
 
 # ------------------------------
 # EXTRAIR STATS
@@ -113,7 +168,7 @@ def extract_stats(data):
     return stats
 
 # ------------------------------
-# CONVERTER + DIFERENÇA
+# CONVERTER
 # ------------------------------
 def convert_stats(stats):
     def val(x):
@@ -143,7 +198,7 @@ def convert_stats(stats):
     return home, away
 
 # ------------------------------
-# NORMALIZAÇÃO SIMPLES
+# NORMALIZAÇÃO
 # ------------------------------
 def normalize(val, max_val):
     return val / max_val if max_val > 0 else 0
@@ -216,21 +271,33 @@ if st.button("Buscar Jogos"):
 
         weights = LEAGUE_WEIGHTS.get(league, DEFAULT_WEIGHTS)
 
-        stats_raw = get_match_stats(match_id)
-        if not stats_raw:
-            continue
+        status = match.get("status", {}).get("type")
 
-        stats = extract_stats(stats_raw)
-        if not stats:
-            continue
+        # 🔥 PASSADO → stats reais
+        if status == "finished":
 
-        home, away = convert_stats(stats)
+            stats_raw = get_match_stats(match_id)
+            if not stats_raw:
+                continue
+
+            stats = extract_stats(stats_raw)
+            if not stats:
+                continue
+
+            home, away = convert_stats(stats)
+
+        # 🔮 FUTURO → média últimos jogos
+        else:
+
+            home = get_team_recent_stats(match["homeTeam"]["id"])
+            away = get_team_recent_stats(match["awayTeam"]["id"])
+
+            if not home or not away:
+                continue
 
         score = calculate_score(home, away, weights)
 
-        # ------------------------------
-        # NOVO: CALCULAR RODADAS
-        # ------------------------------
+        # RODADAS
         home_matches = get_team_matches_played(match["homeTeam"]["id"])
         away_matches = get_team_matches_played(match["awayTeam"]["id"])
 
