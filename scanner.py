@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 from datetime import datetime
 import pytz
+import pandas as pd
 
 # ------------------------------
 # CONFIG
@@ -9,7 +10,7 @@ import pytz
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # ------------------------------
-# BUSCAR JOGOS DO DIA (CORRETO)
+# BUSCAR JOGOS DO DIA
 # ------------------------------
 def get_matches_by_date(date):
     date_str = date.strftime("%Y-%m-%d")
@@ -138,7 +139,6 @@ if st.button("Buscar Jogos"):
         st.warning("Nenhum jogo retornado pela API.")
         st.stop()
 
-    # DEBUG
     st.write(f"Total jogos API: {len(matches)}")
 
     matches = filter_matches_sp(matches, selected_date)
@@ -190,16 +190,24 @@ if st.button("Buscar Jogos"):
         st.warning("Nenhum jogo com estatísticas disponíveis.")
         st.stop()
 
+    # ------------------------------
+    # TABELA INTERATIVA
+    # ------------------------------
+    df = pd.DataFrame(results)
+
     # ordenar
-    results = sorted(results, key=lambda x: abs(x["Edge"]), reverse=True)
+    df = df.sort_values(by="Edge", ascending=False)
 
     st.subheader("📊 Resultados do Dia")
 
-    for r in results:
-        st.write(f"""
-        🏆 {r['Jogo']}  
-        Liga: {r['Liga']}  
-        👉 Pick: {r['Vencedor']}  
-        📈 Edge: {r['Edge']}  
-        🔥 {r['Classificação']}
-        """)
+    # filtro
+    filtro = st.selectbox(
+        "Filtrar por nível",
+        ["Todos", "ELITE", "BOA", "EVITAR"]
+    )
+
+    if filtro != "Todos":
+        df = df[df["Classificação"] == filtro]
+
+    # exibir tabela
+    st.dataframe(df, use_container_width=True)
