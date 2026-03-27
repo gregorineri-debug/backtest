@@ -7,20 +7,18 @@ import pandas as pd
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # ------------------------------
-# LIGAS PERMITIDAS
+# FILTRO FLEXÍVEL DE LIGAS
 # ------------------------------
-ALLOWED_LEAGUES = [
-    "Premier League","Championship",
-    "LaLiga","LaLiga 2",
-    "Bundesliga","2. Bundesliga",
-    "Serie A","Serie B",
-    "Ligue 1","Ligue 2",
-    "Brasileirão Série A","Brasileirão Série B",
-    "Primeira Liga","Eredivisie","Belgian Pro League"
+ALLOWED_KEYWORDS = [
+    "England","Spain","Germany","Italy","France",
+    "Brazil","Portugal","Netherlands","Belgium"
 ]
 
+league_cache = {}
+team_cache = {}
+
 # ------------------------------
-# PESOS
+# PESOS POR LIGA
 # ------------------------------
 LEAGUE_WEIGHTS = {
     "Premier League": {"xg":0.5,"sot":0.3,"xga":0.2},
@@ -62,13 +60,13 @@ def filter_matches_sp(matches, selected_date):
     return filtered
 
 # ------------------------------
-# FILTRO LIGA + MIN 10 JOGOS
+# FILTRO LIGA + CACHE
 # ------------------------------
 def is_valid_league(match):
 
     league_name = match["tournament"]["name"]
 
-    if league_name not in ALLOWED_LEAGUES:
+    if not any(k in league_name for k in ALLOWED_KEYWORDS):
         return False
 
     try:
@@ -76,20 +74,26 @@ def is_valid_league(match):
     except:
         return False
 
+    if tournament_id in league_cache:
+        return league_cache[tournament_id]
+
     url = f"https://api.sofascore.com/api/v1/unique-tournament/{tournament_id}/events/last/0"
     res = requests.get(url, headers=HEADERS)
 
     if res.status_code != 200:
-        return False
+        league_cache[tournament_id] = True
+        return True
 
     data = res.json().get("events", [])
-
     finished = [e for e in data if e.get("status", {}).get("type") == "finished"]
 
-    return len(finished) >= 10
+    valid = len(finished) >= 10
+    league_cache[tournament_id] = valid
+
+    return valid
 
 # ------------------------------
-# STATS
+# STATS JOGO
 # ------------------------------
 def get_match_stats(match_id):
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
@@ -125,26 +129,91 @@ def convert_stats(stats):
     )
 
 # ------------------------------
-# SCORE
+# FORMA RECENTE (ÚLTIMOS JOGOS)
+# ------------------------------
+def get_team_form(team_id):
+
+    if team_id in team_cache:
+        return team_cache[team_id]
+
+    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/0"
+    res = requests.get(url, headers=HEADERS)
+
+    if res.status_code != 200:
+        return {"xg":0,"xga":0,"sot":0}
+
+    events = res.json().get("events", [])[:5]
+
+    xg_total = 0
+    xga_total = 0
+    sot_total = 0
+    count = 0
+
+    for e in events:
+        if e.get("status", {}).get("type") != "finished":
+            continue
+
+        stats_raw = get_match_stats(e["id"])
+        if not stats_raw:
+            continue
+
+        stats = extract_stats(stats_raw)
+        if not stats:
+            continue
+
+        home = e["homeTeam"]["id"] == team_id
+
+        hxg, axg = convert_stats(stats)
+
+        if home:
+            xg_total += hxg["xg"]
+            xga_total += hxg["xga"]
+            sot_total += hxg["sot"]
+        else:
+            xg_total += axg["xg"]
+            xga_total += axg["xga"]
+            sot_total += axg["sot"]
+
+        count += 1
+
+    if count == 0:
+        return {"xg":0,"xga":0,"sot":0}
+
+    form = {
+        "xg": xg_total / count,
+        "xga": xga_total / count,
+        "sot": sot_total / count
+    }
+
+    team_cache[team_id] = form
+    return form
+
+# ------------------------------
+# SCORE V5
 # ------------------------------
 def normalize(v, m): return v/m if m>0 else 0
 
-def calculate_score(home, away, w):
-    xg = normalize(home["xg"]-away["xg"],3)
-    sot = normalize(home["sot"]-away["sot"],10)
-    xga = normalize(away["xga"]-home["xga"],3)
+def calculate_score(home, away, home_form, away_form, w):
+
+    xg = (home["xg"] - away["xg"]) + (home_form["xg"] - away_form["xg"])
+    sot = (home["sot"] - away["sot"]) + (home_form["sot"] - away_form["sot"])
+    xga = (away["xga"] - home["xga"]) + (away_form["xga"] - home_form["xga"])
+
+    xg = normalize(xg, 5)
+    sot = normalize(sot, 15)
+    xga = normalize(xga, 5)
 
     return xg*w["xg"] + sot*w["sot"] + xga*w["xga"]
 
 def classify(e):
-    if e>=0.6: return "ELITE"
-    elif e>=0.3: return "BOA"
+    if e>=0.7: return "ELITE"
+    elif e>=0.35: return "BOA"
     return "EVITAR"
 
 # ------------------------------
 # UI
 # ------------------------------
-st.title("🔥 Scanner V4 - Jogos do Dia")
+st.title("🔥 Scanner V5 - Jogos do Dia")
 
 date = st.date_input("Selecione a data")
 
@@ -173,7 +242,14 @@ if st.button("Buscar Jogos"):
 
         home, away = convert_stats(stats)
 
-        score = calculate_score(home, away, weights)
+        home_form = get_team_form(m["homeTeam"]["id"])
+        away_form = get_team_form(m["awayTeam"]["id"])
+
+        score = calculate_score(home, away, home_form, away_form, weights)
+
+        # filtro anti empate
+        if abs(score) < 0.15:
+            continue
 
         winner = m["homeTeam"]["name"] if score > 0 else m["awayTeam"]["name"]
 
@@ -185,20 +261,11 @@ if st.button("Buscar Jogos"):
             "Classificação": classify(abs(score))
         })
 
-    # ------------------------------
-    # PROTEÇÃO CONTRA ERRO
-    # ------------------------------
     if not results:
-        st.warning("Nenhum jogo válido encontrado após filtros.")
+        st.warning("Nenhum jogo válido encontrado.")
         st.stop()
 
-    df = pd.DataFrame(results)
-
-    if "Edge" not in df.columns:
-        st.warning("Erro ao montar dados (Edge não encontrado).")
-        st.stop()
-
-    df = df.sort_values(by="Edge", ascending=False)
+    df = pd.DataFrame(results).sort_values(by="Edge", ascending=False)
 
     filtro = st.selectbox("Filtrar por nível", ["Todos","ELITE","BOA","EVITAR"])
 
