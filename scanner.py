@@ -4,10 +4,12 @@ from datetime import datetime
 import pytz
 import pandas as pd
 
+# ------------------------------
+# CONFIG
+# ------------------------------
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 team_stats_cache = {}
-team_matches_cache = {}
 
 # ------------------------------
 # PESOS
@@ -23,7 +25,7 @@ LEAGUE_WEIGHTS = {
 DEFAULT_WEIGHTS = {"xg":0.45,"sot":0.3,"xga":0.25}
 
 # ------------------------------
-# MATCHES
+# BUSCAR JOGOS
 # ------------------------------
 def get_matches_by_date(date):
     date_str = date.strftime("%Y-%m-%d")
@@ -34,7 +36,7 @@ def get_matches_by_date(date):
     return res.json().get("events", [])
 
 # ------------------------------
-# STATS
+# STATS MATCH
 # ------------------------------
 def get_match_stats(match_id):
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
@@ -44,18 +46,20 @@ def get_match_stats(match_id):
     return res.json()
 
 def extract_stats(data):
-    stats = {}
     try:
+        stats = {}
         groups = data["statistics"][0]["groups"]
+
         for g in groups:
             for item in g["statisticsItems"]:
                 stats[item["name"]] = {
                     "home": item["home"],
                     "away": item["away"]
                 }
+
+        return stats
     except:
         return None
-    return stats
 
 def val(x):
     try:
@@ -65,7 +69,6 @@ def val(x):
 
 def convert_stats(stats):
 
-    # tenta pegar xG normal
     home_xg = val(
         stats.get("Expected goals", {}).get("home") or
         stats.get("xG", {}).get("home", 0)
@@ -79,7 +82,7 @@ def convert_stats(stats):
     home_sot = val(stats.get("Shots on target", {}).get("home", 0))
     away_sot = val(stats.get("Shots on target", {}).get("away", 0))
 
-    # 🔥 fallback inteligente (se não tiver xG)
+    # 🔥 fallback inteligente
     if home_xg == 0 and home_sot > 0:
         home_xg = home_sot * 0.30
 
@@ -92,7 +95,7 @@ def convert_stats(stats):
     return home, away
 
 # ------------------------------
-# TEAM STATS
+# STATS TIME
 # ------------------------------
 def get_team_recent_stats(team_id, limit=10):
 
@@ -137,6 +140,7 @@ def get_team_recent_stats(team_id, limit=10):
 
         count += 1
 
+    # 🔴 SEM DADOS = IGNORA
     if count < 3:
         return None
 
@@ -178,13 +182,19 @@ def classify(edge):
 # ------------------------------
 # UI
 # ------------------------------
-st.title("🔥 Scanner V4 PRO")
+st.set_page_config(page_title="Scanner V4 PRO", layout="wide")
+
+st.title("🔥 Scanner V4 PRO - Picks do Dia")
 
 selected_date = st.date_input("Selecione a data")
 
 if st.button("Buscar Jogos"):
 
     matches = get_matches_by_date(selected_date)
+
+    if not matches:
+        st.warning("Nenhum jogo encontrado.")
+        st.stop()
 
     results = []
 
@@ -200,6 +210,7 @@ if st.button("Buscar Jogos"):
         home = get_team_recent_stats(match["homeTeam"]["id"])
         away = get_team_recent_stats(match["awayTeam"]["id"])
 
+        # 🔴 ignora jogo sem dados reais
         if not home or not away:
             continue
 
@@ -214,6 +225,10 @@ if st.button("Buscar Jogos"):
             "Edge": round(score, 2),
             "Classificação": classify(abs(score))
         })
+
+    if not results:
+        st.warning("Nenhum jogo com dados suficientes.")
+        st.stop()
 
     df = pd.DataFrame(results).sort_values(by="Edge", ascending=False)
 
