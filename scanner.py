@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import pandas as pd
 
@@ -10,6 +10,14 @@ import pandas as pd
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 team_stats_cache = {}
+
+# ------------------------------
+# FILTRO DE LIGAS (OPCIONAL)
+# ------------------------------
+ALLOWED_LEAGUES = [
+    "Brasileirão Betano","Premier League","La Liga","Serie A",
+    "Bundesliga","Ligue 1","Liga Portugal Betclic"
+]
 
 # ------------------------------
 # PESOS
@@ -31,9 +39,34 @@ def get_matches_by_date(date):
     date_str = date.strftime("%Y-%m-%d")
     url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
     res = requests.get(url, headers=HEADERS)
+
     if res.status_code != 200:
         return []
+
     return res.json().get("events", [])
+
+# ------------------------------
+# AJUSTE TIMEZONE
+# ------------------------------
+def filter_matches_by_date(matches, selected_date):
+    tz_sp = pytz.timezone("America/Sao_Paulo")
+    filtered = []
+
+    for match in matches:
+        ts = match.get("startTimestamp")
+        if not ts:
+            continue
+
+        utc_time = datetime.utcfromtimestamp(ts).replace(tzinfo=pytz.utc)
+        sp_time = utc_time.astimezone(tz_sp)
+
+        if sp_time.date() == selected_date:
+            league = match.get("tournament", {}).get("uniqueTournament", {}).get("name", "")
+
+            if not ALLOWED_LEAGUES or league in ALLOWED_LEAGUES:
+                filtered.append(match)
+
+    return filtered
 
 # ------------------------------
 # STATS MATCH
@@ -41,8 +74,10 @@ def get_matches_by_date(date):
 def get_match_stats(match_id):
     url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
     res = requests.get(url, headers=HEADERS)
+
     if res.status_code != 200:
         return None
+
     return res.json()
 
 def extract_stats(data):
@@ -82,7 +117,7 @@ def convert_stats(stats):
     home_sot = val(stats.get("Shots on target", {}).get("home", 0))
     away_sot = val(stats.get("Shots on target", {}).get("away", 0))
 
-    # 🔥 fallback inteligente
+    # fallback inteligente
     if home_xg == 0 and home_sot > 0:
         home_xg = home_sot * 0.30
 
@@ -140,7 +175,6 @@ def get_team_recent_stats(team_id, limit=10):
 
         count += 1
 
-    # 🔴 SEM DADOS = IGNORA
     if count < 3:
         return None
 
@@ -190,7 +224,12 @@ selected_date = st.date_input("Selecione a data")
 
 if st.button("Buscar Jogos"):
 
-    matches = get_matches_by_date(selected_date)
+    # 🔥 pega hoje + ontem (corrige bug de madrugada)
+    matches_today = get_matches_by_date(selected_date)
+    matches_yesterday = get_matches_by_date(selected_date - timedelta(days=1))
+
+    matches = matches_today + matches_yesterday
+    matches = filter_matches_by_date(matches, selected_date)
 
     if not matches:
         st.warning("Nenhum jogo encontrado.")
@@ -210,7 +249,6 @@ if st.button("Buscar Jogos"):
         home = get_team_recent_stats(match["homeTeam"]["id"])
         away = get_team_recent_stats(match["awayTeam"]["id"])
 
-        # 🔴 ignora jogo sem dados reais
         if not home or not away:
             continue
 
