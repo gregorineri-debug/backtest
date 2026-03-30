@@ -9,7 +9,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
 # -------------------------
-# CRIAR PASTAS (FIX ERRO)
+# CRIAR PASTAS
 # -------------------------
 os.makedirs("data", exist_ok=True)
 os.makedirs("models", exist_ok=True)
@@ -36,7 +36,7 @@ LEAGUES = [
 ]
 
 # -------------------------
-# SOFASCORE API
+# SOFASCORE
 # -------------------------
 
 def get_events(date):
@@ -74,15 +74,25 @@ def get_paths(league):
     return f"data/{name}.csv", f"models/{name}.pkl"
 
 # -------------------------
-# DATASET (CACHE)
+# DATASET COM PROTEÇÃO
 # -------------------------
 
 def load_or_create_dataset(league):
 
     data_path, _ = get_paths(league)
 
+    # 🔁 Tenta carregar cache
     if os.path.exists(data_path):
-        return pd.read_csv(data_path)
+        try:
+            df = pd.read_csv(data_path)
+
+            if df.empty or len(df) < 10:
+                os.remove(data_path)
+            else:
+                return df
+
+        except:
+            os.remove(data_path)
 
     st.write(f"⬇️ Baixando histórico: {league}")
 
@@ -115,13 +125,18 @@ def load_or_create_dataset(league):
         except:
             continue
 
+    # 🚨 Proteção contra dataset vazio
+    if len(rows) < 20:
+        st.warning(f"{league} sem dados suficientes")
+        return None
+
     df = pd.DataFrame(rows)
     df.to_csv(data_path, index=False)
 
     return df
 
 # -------------------------
-# MODELO (CACHE)
+# MODELO
 # -------------------------
 
 def load_or_train_model(league):
@@ -134,7 +149,7 @@ def load_or_train_model(league):
 
     df = load_or_create_dataset(league)
 
-    if len(df) < 50:
+    if df is None or len(df) < 50:
         return None
 
     X = df.drop(columns=["result"])
@@ -170,10 +185,10 @@ def predict(e, model, scaler):
     return winner, edge
 
 # -------------------------
-# INTERFACE
+# UI
 # -------------------------
 
-st.title("⚽ Modelo Profissional (Rápido + Cache + Por Liga)")
+st.title("⚽ Modelo Profissional (Estável + Cache + Por Liga)")
 
 date = st.date_input("Escolha a data")
 date_str = date.strftime("%Y-%m-%d")
@@ -196,7 +211,6 @@ if st.button("Analisar Jogos"):
         model_data = load_or_train_model(league)
 
         if not model_data:
-            st.warning(f"{league} sem dados suficientes")
             continue
 
         model, scaler, ranking = model_data
