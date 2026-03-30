@@ -17,6 +17,56 @@ VALID_LEAGUE_IDS = [
     238,239,152,40,215,52,278
 ]
 
+# 🔥 NOME DAS LIGAS (para seleção)
+LEAGUE_NAMES = {
+    325: "Brasileirão",
+    390: "Série B",
+    17: "Premier League",
+    18: "Championship",
+    8: "La Liga",
+    54: "La Liga 2",
+    35: "Bundesliga",
+    44: "2. Bundesliga",
+    23: "Serie A",
+    53: "Serie B Itália",
+    34: "Ligue 1",
+    182: "Ligue 2",
+    955: "Saudi Pro League",
+    155: "Argentina Liga",
+    703: "Primera Nacional",
+    45: "Áustria",
+    38: "Bélgica",
+    247: "Bulgária",
+    172: "Rep. Tcheca",
+    11653: "Chile",
+    11539: "Colômbia Apertura",
+    11536: "Colômbia Finalización",
+    170: "Croácia",
+    39: "Dinamarca",
+    808: "Egito",
+    36: "Escócia",
+    242: "MLS",
+    185: "Grécia",
+    37: "Eredivisie",
+    131: "Eerste Divisie",
+    192: "Irlanda",
+    937: "Marrocos",
+    11621: "Liga MX Apertura",
+    11620: "Liga MX Clausura",
+    20: "Noruega",
+    11540: "Paraguai Apertura",
+    11541: "Paraguai Clausura",
+    406: "Peru",
+    202: "Polônia",
+    238: "Portugal",
+    239: "Portugal 2",
+    152: "Romênia",
+    40: "Suécia",
+    215: "Suíça",
+    52: "Turquia",
+    278: "Uruguai"
+}
+
 # -------------------------
 # API
 # -------------------------
@@ -199,7 +249,6 @@ def calculate_score(home_id, away_id):
 
     home_strength = calculate_home_strength(home_id)
 
-    # 🔥 DIFERENCIAIS
     form_diff = hf - af
     xg_diff = hxg - axg
     shots_diff = (hs - as_) * 0.05
@@ -233,17 +282,37 @@ def predict(e):
 # UI
 # -------------------------
 
-st.title("⚽ Scanner PRO (Alta Assertividade)")
+st.title("⚽ Scanner PRO (Filtro por Liga)")
 
 date = st.date_input("Escolha a data")
 
+# 🔥 SELECT DE LIGA
+league_options = ["Todas"] + list(LEAGUE_NAMES.values())
+selected_league = st.selectbox("Escolha a liga", league_options)
+
 events = get_events(date.strftime("%Y-%m-%d"))
 
-filtered_events = [
-    e for e in events
-    if is_valid_league(e)
-    and is_same_day_br(e, date)
-]
+# -------------------------
+# FILTRO FINAL
+# -------------------------
+
+filtered_events = []
+
+for e in events:
+
+    if not is_valid_league(e):
+        continue
+
+    if not is_same_day_br(e, date):
+        continue
+
+    league_id = e["tournament"]["uniqueTournament"]["id"]
+    league_name = LEAGUE_NAMES.get(league_id, "Outra")
+
+    if selected_league != "Todas" and league_name != selected_league:
+        continue
+
+    filtered_events.append(e)
 
 st.write(f"Jogos válidos: {len(filtered_events)}")
 
@@ -259,7 +328,6 @@ if st.button("Analisar Jogos"):
 
         winner, edge = predict(e)
 
-        # 🔥 FILTRO ANTI-JOGO EQUILIBRADO
         if edge < 0.5:
             continue
 
@@ -273,6 +341,7 @@ if st.button("Analisar Jogos"):
 
         results.append({
             "Hora": br_time,
+            "Liga": LEAGUE_NAMES.get(e["tournament"]["uniqueTournament"]["id"], "Outra"),
             "Jogo": f"{home} vs {away}",
             "Pick": winner,
             "Edge": round(edge, 2),
