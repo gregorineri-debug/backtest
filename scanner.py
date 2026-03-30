@@ -217,41 +217,27 @@ st.write(f"Jogos encontrados: {len(events)}")
 
 if st.button("Analisar Jogos"):
 
-    results = []
-
     for e in events:
 
-        try:
-            league = e["tournament"]["name"]
+        league = e["tournament"]["name"]
 
-            winner, edge = predict(e)
+        winner, edge = predict(e)
 
-            home = e["homeTeam"]["name"]
-            away = e["awayTeam"]["name"]
-
-            utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=pytz.utc)
-            br_time = utc.astimezone(BR_TZ).strftime("%H:%M")
-
-            if edge >= 1.0:
-                tag = "ELITE"
-            elif edge >= 0.5:
-                tag = "BOM"
-            else:
-                tag = "FRACO"
-
-            results.append({
-                "Hora": br_time,
-                "Liga": league,
-                "Jogo": f"{home} vs {away}",
-                "Pick": winner,
-                "Edge": round(edge, 2),
-                "Classificação": tag
-            })
-
-        except:
+        # 🔥 FILTRO (ANTES DE QUALQUER COISA)
+        if edge < 0.5:
             continue
 
-    df = pd.DataFrame(results)
-    df = df.sort_values(by="Edge", ascending=False)
+        home = e["homeTeam"]["name"]
+        away = e["awayTeam"]["name"]
 
-    st.dataframe(df, use_container_width=True)
+        utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=pytz.utc)
+        br_time = utc.astimezone(BR_TZ).strftime("%H:%M")
+
+        if edge >= 1.0:
+            tag = "🔥 ELITE"
+        else:
+            tag = "🟡 BOM"
+
+        st.write(f"{br_time} | {home} vs {away}")
+        st.write(f"👉 {winner} | Edge: {round(edge,2)} | {tag}")
+        st.write("---")
