@@ -2,12 +2,49 @@ import streamlit as st
 import requests
 from datetime import datetime
 import pytz
-import pandas as pd
 
 # -------------------------
 # CONFIG
 # -------------------------
 BR_TZ = pytz.timezone("America/Sao_Paulo")
+
+# 🔥 LISTA EXATA DAS SUAS LIGAS
+VALID_LEAGUES = [
+    "Brasileirão Betano","Brasileirão Série B",
+    "Premier League","Championship",
+    "La Liga","La Liga 2",
+    "Bundesliga","2. Bundesliga",
+    "Serie A","Serie B",
+    "Ligue 1","Ligue 2",
+    "Saudi Pro League",
+    "Liga Profesional de Fútbol","Primera Nacional",
+    "Austrian Bundesliga",
+    "Pro League",
+    "Parva Liga",
+    "Czech First League",
+    "Liga de Primera",
+    "Primera A, Apertura","Primera A, Finalización",
+    "HNL",
+    "Danish Superliga",
+    "Egyptian Premier League",
+    "Scottish Premiership",
+    "MLS",
+    "Stoiximan Super League",
+    "VriendenLoterij Eredivisie","Eerste Divisie",
+    "Premier Division",
+    "Botola Pro",
+    "Liga MX, Apertura","Liga MX, Clausura",
+    "Eliteserien",
+    "Primera División, Apertura","PrimeraDivisión, Clausura",
+    "Liga 1",
+    "Ekstraklasa",
+    "Liga Portugal Betclic","Liga Portugal 2",
+    "Romanian SuperLiga",
+    "Allsvenskan",
+    "Swiss Super League",
+    "Trendyoll Super Lig",
+    "Liga AUF Uruguaya"
+]
 
 LEAGUE_MODEL = {
     "Brasileirão Betano": ["form", "home_strength", "xg"],
@@ -17,9 +54,6 @@ LEAGUE_MODEL = {
     "default": ["form", "xg", "shots"]
 }
 
-# 🔥 CACHE GLOBAL (CRÍTICO)
-team_cache = {}
-
 # -------------------------
 # API
 # -------------------------
@@ -28,6 +62,20 @@ def get_events(date):
     url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
     return requests.get(url).json().get("events", [])
 
+# -------------------------
+# FILTRO DE DATA BRASIL
+# -------------------------
+
+def is_same_day_br(event, selected_date):
+
+    utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=pytz.utc)
+    br_time = utc.astimezone(BR_TZ)
+
+    return br_time.date() == selected_date
+
+# -------------------------
+# STATS
+# -------------------------
 
 def get_team_last_matches(team_id):
     url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
@@ -54,13 +102,10 @@ def get_event_stats(event_id):
         return (0,0),(0,0)
 
 # -------------------------
-# FORMA (COM CACHE)
+# FORMA
 # -------------------------
 
 def calculate_form(team_id):
-
-    if team_id in team_cache and "form" in team_cache[team_id]:
-        return team_cache[team_id]["form"]
 
     matches = get_team_last_matches(team_id)
 
@@ -91,23 +136,13 @@ def calculate_form(team_id):
         except:
             continue
 
-    form = points / total if total > 0 else 0.5
-
-    if team_id not in team_cache:
-        team_cache[team_id] = {}
-
-    team_cache[team_id]["form"] = form
-
-    return form
+    return points / total if total > 0 else 0.5
 
 # -------------------------
-# MÉDIAS (COM CACHE)
+# MÉDIAS
 # -------------------------
 
 def calculate_averages(team_id):
-
-    if team_id in team_cache and "avg" in team_cache[team_id]:
-        return team_cache[team_id]["avg"]
 
     matches = get_team_last_matches(team_id)
 
@@ -127,20 +162,14 @@ def calculate_averages(team_id):
                 shots_total += s_a
 
             count += 1
+
         except:
             continue
 
     if count == 0:
-        avg = (1, 10)
-    else:
-        avg = (xg_total / count, shots_total / count)
+        return 1, 10
 
-    if team_id not in team_cache:
-        team_cache[team_id] = {}
-
-    team_cache[team_id]["avg"] = avg
-
-    return avg
+    return xg_total / count, shots_total / count
 
 # -------------------------
 # SCORE
@@ -202,14 +231,20 @@ def predict(event):
 # UI
 # -------------------------
 
-st.title("⚽ Modelo Profissional (Rápido + Forma Real)")
+st.title("⚽ Scanner Profissional (Filtrado + Horário BR)")
 
 date = st.date_input("Escolha a data")
-date_str = date.strftime("%Y-%m-%d")
 
-events = get_events(date_str)
+events = get_events(date.strftime("%Y-%m-%d"))
 
-st.write(f"Jogos encontrados: {len(events)}")
+# 🔥 FILTRO FINAL
+filtered_events = [
+    e for e in events
+    if e["tournament"]["name"] in VALID_LEAGUES
+    and is_same_day_br(e, date)
+]
+
+st.write(f"Jogos válidos: {len(filtered_events)}")
 
 # -------------------------
 # EXECUÇÃO
@@ -217,13 +252,15 @@ st.write(f"Jogos encontrados: {len(events)}")
 
 if st.button("Analisar Jogos"):
 
-    for e in events:
+    count = 0
+
+    for e in filtered_events:
 
         league = e["tournament"]["name"]
 
         winner, edge = predict(e)
 
-        # 🔥 FILTRO (ANTES DE QUALQUER COISA)
+        # 🔥 FILTRO ELITE + BOM
         if edge < 0.5:
             continue
 
@@ -238,6 +275,11 @@ if st.button("Analisar Jogos"):
         else:
             tag = "🟡 BOM"
 
-        st.write(f"{br_time} | {home} vs {away}")
+        st.write(f"{br_time} | {league}")
+        st.write(f"{home} vs {away}")
         st.write(f"👉 {winner} | Edge: {round(edge,2)} | {tag}")
         st.write("---")
+
+        count += 1
+
+    st.write(f"Total de picks relevantes: {count}")
