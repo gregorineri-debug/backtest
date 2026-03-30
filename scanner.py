@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 from datetime import datetime
 import pytz
+import pandas as pd
 
 # -------------------------
 # CONFIG
@@ -182,7 +183,7 @@ def predict(e):
 # UI
 # -------------------------
 
-st.title("⚽ Scanner Profissional (100% por ID)")
+st.title("⚽ Scanner Profissional (Tabela + IDs)")
 
 date = st.date_input("Escolha a data")
 
@@ -197,12 +198,12 @@ filtered_events = [
 st.write(f"Jogos válidos: {len(filtered_events)}")
 
 # -------------------------
-# EXECUÇÃO
+# EXECUÇÃO (TABELA)
 # -------------------------
 
 if st.button("Analisar Jogos"):
 
-    count = 0
+    results = []
 
     for e in filtered_events:
 
@@ -217,12 +218,26 @@ if st.button("Analisar Jogos"):
         home = e["homeTeam"]["name"]
         away = e["awayTeam"]["name"]
 
-        tag = "🔥 ELITE" if edge >= 1.0 else "🟡 BOM"
+        tag = "ELITE" if edge >= 1.0 else "BOM"
 
-        st.write(f"{br_time} | {home} vs {away}")
-        st.write(f"{winner} | {round(edge,2)} | {tag}")
-        st.write("---")
+        results.append({
+            "Hora": br_time,
+            "Jogo": f"{home} vs {away}",
+            "Pick": winner,
+            "Edge": round(edge, 2),
+            "Classificação": tag
+        })
 
-        count += 1
+    if results:
 
-    st.write(f"Total de picks relevantes: {count}")
+        df = pd.DataFrame(results)
+
+        # 🔥 ordena pelos melhores
+        df = df.sort_values(by="Edge", ascending=False)
+
+        st.dataframe(df, use_container_width=True)
+
+        st.write(f"Total de picks relevantes: {len(df)}")
+
+    else:
+        st.warning("Nenhuma oportunidade ELITE/BOM encontrada.")
