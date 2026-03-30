@@ -1,42 +1,23 @@
 import streamlit as st
 import requests
-import pandas as pd
-import os
-import pickle
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-
-# -------------------------
-# CRIAR PASTAS
-# -------------------------
-os.makedirs("data", exist_ok=True)
-os.makedirs("models", exist_ok=True)
 
 # -------------------------
 # CONFIG
 # -------------------------
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 
-LEAGUES = [
-    "Brasileirão Betano","Brasileirão Série B","Premier League","Championship",
-    "La Liga","La Liga 2","Bundesliga","2. Bundesliga","Serie A","Serie B",
-    "Ligue 1","Ligue 2","Saudi Pro League","Liga Profesional de Fútbol",
-    "Primera Nacional","Austrian Bundesliga","Pro League","Parva Liga",
-    "Czech First League","Liga de Primera","Primera A, Apertura",
-    "Primera A, Finalización","HNL","Danish Superliga",
-    "Egyptian Premier League","Scottish Premiership","MLS",
-    "Stoiximan Super League","VriendenLoterij Eredivisie","Eerste Divisie",
-    "Premier Division","Botola Pro","Liga MX, Apertura","Liga MX, Clausura",
-    "Eliteserien","Primera División, Apertura","PrimeraDivisión, Clausura",
-    "Liga 1","Ekstraklasa","Liga Portugal Betclic","Liga Portugal 2",
-    "Romanian SuperLiga","Allsvenskan","Swiss Super League",
-    "Trendyoll Super Lig","Liga AUF Uruguaya"
-]
+LEAGUE_MODEL = {
+    "Brasileirão Betano": ["form", "home_strength", "xg"],
+    "Premier League": ["xg", "shots", "form"],
+    "La Liga": ["possession", "xg", "form"],
+    "Bundesliga": ["shots", "xg", "form"],
+    "default": ["form", "xg", "shots"]
+}
 
 # -------------------------
-# SOFASCORE
+# API
 # -------------------------
 
 def get_events(date):
@@ -44,7 +25,13 @@ def get_events(date):
     return requests.get(url).json().get("events", [])
 
 
-def get_stats(event_id):
+def get_team_last_matches(team_id):
+    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
+    data = requests.get(url).json()
+    return data.get("events", [])
+
+
+def get_event_stats(event_id):
     try:
         url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
         data = requests.get(url).json()
@@ -54,133 +41,138 @@ def get_stats(event_id):
             for g in stats:
                 for s in g["statisticsItems"]:
                     if s["name"] == name:
-                        return s["home"], s["away"]
+                        return float(s["home"]), float(s["away"])
             return 0, 0
 
-        return find("Expected goals"), find("Total shots"), find("Ball possession")
+        return find("Expected goals"), find("Total shots")
 
     except:
-        return (0,0),(0,0),(0,0)
+        return (0,0),(0,0)
 
 # -------------------------
-# PATHS
+# FORMA REAL
 # -------------------------
 
-def safe_name(league):
-    return league.replace(" ", "_").replace(",", "")
+def calculate_form(team_id):
 
-def get_paths(league):
-    name = safe_name(league)
-    return f"data/{name}.csv", f"models/{name}.pkl"
+    matches = get_team_last_matches(team_id)
 
-# -------------------------
-# DATASET COM PROTEÇÃO
-# -------------------------
+    if not matches:
+        return 0.5
 
-def load_or_create_dataset(league):
+    points = 0
+    total = 0
 
-    data_path, _ = get_paths(league)
-
-    # 🔁 Tenta carregar cache
-    if os.path.exists(data_path):
+    for m in matches:
         try:
-            df = pd.read_csv(data_path)
+            home_id = m["homeTeam"]["id"]
+            home_score = m["homeScore"]["current"]
+            away_score = m["awayScore"]["current"]
 
-            if df.empty or len(df) < 10:
-                os.remove(data_path)
+            if team_id == home_id:
+                if home_score > away_score:
+                    points += 3
+                elif home_score == away_score:
+                    points += 1
             else:
-                return df
+                if away_score > home_score:
+                    points += 3
+                elif home_score == away_score:
+                    points += 1
 
-        except:
-            os.remove(data_path)
-
-    st.write(f"⬇️ Baixando histórico: {league}")
-
-    rows = []
-
-    for i in range(120):
-        d = datetime.now() - timedelta(days=i)
-        date_str = d.strftime("%Y-%m-%d")
-
-        try:
-            events = get_events(date_str)
-
-            for e in events:
-                if (
-                    e["tournament"]["name"] == league and
-                    e["status"]["type"] == "finished"
-                ):
-                    (xg_h,xg_a),(s_h,s_a),(p_h,p_a) = get_stats(e["id"])
-
-                    result = 1 if e["homeScore"]["current"] > e["awayScore"]["current"] else 0
-
-                    rows.append({
-                        "xg_diff": xg_h - xg_a,
-                        "shots_diff": s_h - s_a,
-                        "pos_diff": p_h - p_a,
-                        "home_adv": 1,
-                        "result": result
-                    })
+            total += 3
 
         except:
             continue
 
-    # 🚨 Proteção contra dataset vazio
-    if len(rows) < 20:
-        st.warning(f"{league} sem dados suficientes")
-        return None
-
-    df = pd.DataFrame(rows)
-    df.to_csv(data_path, index=False)
-
-    return df
+    return points / total if total > 0 else 0.5
 
 # -------------------------
-# MODELO
+# MÉDIAS
 # -------------------------
 
-def load_or_train_model(league):
+def calculate_averages(team_id):
 
-    data_path, model_path = get_paths(league)
+    matches = get_team_last_matches(team_id)
 
-    if os.path.exists(model_path):
-        with open(model_path, "rb") as f:
-            return pickle.load(f)
+    xg_total = 0
+    shots_total = 0
+    count = 0
 
-    df = load_or_create_dataset(league)
+    for m in matches:
+        try:
+            (xg_h,xg_a),(s_h,s_a) = get_event_stats(m["id"])
 
-    if df is None or len(df) < 50:
-        return None
+            if m["homeTeam"]["id"] == team_id:
+                xg_total += xg_h
+                shots_total += s_h
+            else:
+                xg_total += xg_a
+                shots_total += s_a
 
-    X = df.drop(columns=["result"])
-    y = df["result"]
+            count += 1
 
-    scaler = StandardScaler()
-    Xs = scaler.fit_transform(X)
+        except:
+            continue
 
-    model = RandomForestClassifier(n_estimators=200)
-    model.fit(Xs, y)
+    if count == 0:
+        return 1, 10
 
-    importance = model.feature_importances_
-    ranking = sorted(zip(X.columns, importance), key=lambda x: x[1], reverse=True)
+    return xg_total / count, shots_total / count
 
-    with open(model_path, "wb") as f:
-        pickle.dump((model, scaler, ranking), f)
+# -------------------------
+# SCORE
+# -------------------------
 
-    return model, scaler, ranking
+def calculate_score(home_id, away_id, league):
+
+    criteria = LEAGUE_MODEL.get(league, LEAGUE_MODEL["default"])
+
+    home_form = calculate_form(home_id)
+    away_form = calculate_form(away_id)
+
+    home_xg, home_shots = calculate_averages(home_id)
+    away_xg, away_shots = calculate_averages(away_id)
+
+    home_score = 0
+    away_score = 0
+
+    for c in criteria:
+
+        if c == "form":
+            home_score += home_form
+            away_score += away_form
+
+        elif c == "xg":
+            home_score += home_xg
+            away_score += away_xg
+
+        elif c == "shots":
+            home_score += home_shots * 0.05
+            away_score += away_shots * 0.05
+
+        elif c == "home_strength":
+            home_score += 0.3
+
+    return home_score, away_score
 
 # -------------------------
 # PREDIÇÃO
 # -------------------------
 
-def predict(e, model, scaler):
-    (xg_h,xg_a),(s_h,s_a),(p_h,p_a) = get_stats(e["id"])
+def predict(event):
 
-    row = [[xg_h-xg_a, s_h-s_a, p_h-p_a, 1]]
-    prob = model.predict_proba(scaler.transform(row))[0][1]
+    league = event["tournament"]["name"]
 
-    winner = "HOME" if prob > 0.5 else "AWAY"
-    edge = abs(prob - 0.5)
+    home_id = event["homeTeam"]["id"]
+    away_id = event["awayTeam"]["id"]
+
+    home_score, away_score = calculate_score(home_id, away_id, league)
+
+    diff = home_score - away_score
+
+    winner = "HOME" if diff > 0 else "AWAY"
+    edge = abs(diff)
 
     return winner, edge
 
@@ -188,13 +180,12 @@ def predict(e, model, scaler):
 # UI
 # -------------------------
 
-st.title("⚽ Modelo Profissional (Estável + Cache + Por Liga)")
+st.title("⚽ Modelo Profissional com Forma Real")
 
 date = st.date_input("Escolha a data")
 date_str = date.strftime("%Y-%m-%d")
 
-events = get_events(date_str)
-events = [e for e in events if e["tournament"]["name"] in LEAGUES]
+events = get_events(date)
 
 st.write(f"Jogos encontrados: {len(events)}")
 
@@ -208,14 +199,7 @@ if st.button("Analisar Jogos"):
 
         league = e["tournament"]["name"]
 
-        model_data = load_or_train_model(league)
-
-        if not model_data:
-            continue
-
-        model, scaler, ranking = model_data
-
-        winner, edge = predict(e, model, scaler)
+        winner, edge = predict(e)
 
         home = e["homeTeam"]["name"]
         away = e["awayTeam"]["name"]
@@ -223,18 +207,13 @@ if st.button("Analisar Jogos"):
         utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=pytz.utc)
         br_time = utc.astimezone(BR_TZ).strftime("%H:%M")
 
-        if edge >= 0.20:
+        if edge >= 1.0:
             tag = "🔥 ELITE"
-        elif edge >= 0.10:
+        elif edge >= 0.5:
             tag = "🟡 BOM"
         else:
             tag = "⚪ FRACO"
 
         st.write(f"{br_time} | {home} vs {away}")
         st.write(f"👉 {winner} | Edge: {round(edge,2)} | {tag}")
-
-        st.write("Top 3 da liga:")
-        for f,_ in ranking[:3]:
-            st.write(f"- {f}")
-
         st.write("---")
