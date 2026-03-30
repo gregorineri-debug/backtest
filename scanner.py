@@ -17,6 +17,9 @@ LEAGUE_MODEL = {
     "default": ["form", "xg", "shots"]
 }
 
+# 🔥 CACHE GLOBAL (CRÍTICO)
+team_cache = {}
+
 # -------------------------
 # API
 # -------------------------
@@ -51,10 +54,14 @@ def get_event_stats(event_id):
         return (0,0),(0,0)
 
 # -------------------------
-# FORMA
+# FORMA (COM CACHE)
 # -------------------------
 
 def calculate_form(team_id):
+
+    if team_id in team_cache and "form" in team_cache[team_id]:
+        return team_cache[team_id]["form"]
+
     matches = get_team_last_matches(team_id)
 
     if not matches:
@@ -84,13 +91,23 @@ def calculate_form(team_id):
         except:
             continue
 
-    return points / total if total > 0 else 0.5
+    form = points / total if total > 0 else 0.5
+
+    if team_id not in team_cache:
+        team_cache[team_id] = {}
+
+    team_cache[team_id]["form"] = form
+
+    return form
 
 # -------------------------
-# MÉDIAS
+# MÉDIAS (COM CACHE)
 # -------------------------
 
 def calculate_averages(team_id):
+
+    if team_id in team_cache and "avg" in team_cache[team_id]:
+        return team_cache[team_id]["avg"]
 
     matches = get_team_last_matches(team_id)
 
@@ -114,9 +131,16 @@ def calculate_averages(team_id):
             continue
 
     if count == 0:
-        return 1, 10
+        avg = (1, 10)
+    else:
+        avg = (xg_total / count, shots_total / count)
 
-    return xg_total / count, shots_total / count
+    if team_id not in team_cache:
+        team_cache[team_id] = {}
+
+    team_cache[team_id]["avg"] = avg
+
+    return avg
 
 # -------------------------
 # SCORE
@@ -178,7 +202,7 @@ def predict(event):
 # UI
 # -------------------------
 
-st.title("⚽ Modelo Profissional com Forma Real (Tabela)")
+st.title("⚽ Modelo Profissional (Rápido + Forma Real)")
 
 date = st.date_input("Escolha a data")
 date_str = date.strftime("%Y-%m-%d")
@@ -228,8 +252,6 @@ if st.button("Analisar Jogos"):
             continue
 
     df = pd.DataFrame(results)
-
-    # Ordena pelos melhores
     df = df.sort_values(by="Edge", ascending=False)
 
     st.dataframe(df, use_container_width=True)
