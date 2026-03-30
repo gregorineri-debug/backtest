@@ -1,273 +1,228 @@
 import streamlit as st
 import requests
-from datetime import datetime, timedelta
-import pytz
 import pandas as pd
+from datetime import datetime
+import pytz
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
 
-# ------------------------------
+# -------------------------
 # CONFIG
-# ------------------------------
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+# -------------------------
+BR_TZ = pytz.timezone("America/Sao_Paulo")
 
-team_stats_cache = {}
-
-# ------------------------------
-# FILTRO DE LIGAS (OPCIONAL)
-# ------------------------------
-ALLOWED_LEAGUES = [
-    "Brasileirão Betano","Premier League","La Liga","Serie A",
-    "Bundesliga","Ligue 1","Liga Portugal Betclic"
+LEAGUES = [
+    "Brasileirão Betano","Brasileirão Série B","Premier League","Championship",
+    "La Liga","La Liga 2","Bundesliga","2. Bundesliga","Serie A","Serie B",
+    "Ligue 1","Ligue 2","Saudi Pro League","Liga Profesional de Fútbol",
+    "Primera Nacional","Austrian Bundesliga","Pro League","Parva Liga",
+    "Czech First League","Liga de Primera","Primera A, Apertura",
+    "Primera A, Finalización","HNL","Danish Superliga",
+    "Egyptian Premier League","Scottish Premiership","MLS",
+    "Stoiximan Super League","VriendenLoterij Eredivisie","Eerste Divisie",
+    "Premier Division","Botola Pro","Liga MX, Apertura","Liga MX, Clausura",
+    "Eliteserien","Primera División, Apertura","PrimeraDivisión, Clausura",
+    "Liga 1","Ekstraklasa","Liga Portugal Betclic","Liga Portugal 2",
+    "Romanian SuperLiga","Allsvenskan","Swiss Super League",
+    "Trendyoll Super Lig","Liga AUF Uruguaya"
 ]
 
-# ------------------------------
-# PESOS
-# ------------------------------
-LEAGUE_WEIGHTS = {
-    "Premier League": {"xg":0.5,"sot":0.3,"xga":0.2},
-    "Bundesliga": {"xg":0.55,"sot":0.25,"xga":0.2},
-    "Serie A": {"xg":0.35,"sot":0.25,"xga":0.4},
-    "La Liga": {"xg":0.45,"sot":0.25,"xga":0.3},
-    "Ligue 1": {"xg":0.4,"sot":0.35,"xga":0.25},
-}
+# -------------------------
+# FUNÇÕES SOFASCORE
+# -------------------------
 
-DEFAULT_WEIGHTS = {"xg":0.45,"sot":0.3,"xga":0.25}
+def get_events_by_date(date):
+    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date}"
+    res = requests.get(url)
+    data = res.json()
+    return data.get("events", [])
 
-# ------------------------------
-# BUSCAR JOGOS
-# ------------------------------
-def get_matches_by_date(date):
-    date_str = date.strftime("%Y-%m-%d")
-    url = f"https://api.sofascore.com/api/v1/sport/football/scheduled-events/{date_str}"
-    res = requests.get(url, headers=HEADERS)
 
-    if res.status_code != 200:
-        return []
+def convert_to_br_time(timestamp):
+    utc_time = datetime.utcfromtimestamp(timestamp).replace(tzinfo=pytz.utc)
+    return utc_time.astimezone(BR_TZ)
 
-    return res.json().get("events", [])
 
-# ------------------------------
-# AJUSTE TIMEZONE
-# ------------------------------
-def filter_matches_by_date(matches, selected_date):
-    tz_sp = pytz.timezone("America/Sao_Paulo")
-    filtered = []
-
-    for match in matches:
-        ts = match.get("startTimestamp")
-        if not ts:
-            continue
-
-        utc_time = datetime.utcfromtimestamp(ts).replace(tzinfo=pytz.utc)
-        sp_time = utc_time.astimezone(tz_sp)
-
-        if sp_time.date() == selected_date:
-            league = match.get("tournament", {}).get("uniqueTournament", {}).get("name", "")
-
-            if not ALLOWED_LEAGUES or league in ALLOWED_LEAGUES:
-                filtered.append(match)
-
-    return filtered
-
-# ------------------------------
-# STATS MATCH
-# ------------------------------
-def get_match_stats(match_id):
-    url = f"https://api.sofascore.com/api/v1/event/{match_id}/statistics"
-    res = requests.get(url, headers=HEADERS)
-
-    if res.status_code != 200:
-        return None
-
-    return res.json()
-
-def extract_stats(data):
+def get_event_stats(event_id):
     try:
-        stats = {}
-        groups = data["statistics"][0]["groups"]
+        url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
+        res = requests.get(url)
+        data = res.json()
 
-        for g in groups:
-            for item in g["statisticsItems"]:
-                stats[item["name"]] = {
-                    "home": item["home"],
-                    "away": item["away"]
-                }
+        stats = data["statistics"][0]["groups"]
 
-        return stats
+        def find_stat(name):
+            for group in stats:
+                for item in group["statisticsItems"]:
+                    if item["name"] == name:
+                        return item["home"], item["away"]
+            return 0, 0
+
+        xg_home, xg_away = find_stat("Expected goals")
+        shots_home, shots_away = find_stat("Total shots")
+        poss_home, poss_away = find_stat("Ball possession")
+
+        return xg_home, xg_away, shots_home, shots_away, poss_home, poss_away
+
     except:
-        return None
+        return 0,0,0,0,0,0
 
-def val(x):
+
+# -------------------------
+# MODELO
+# -------------------------
+
+def prepare_row(event):
     try:
-        return float(x)
-    except:
-        return 0
+        event_id = event["id"]
 
-def convert_stats(stats):
+        xg_h, xg_a, shots_h, shots_a, pos_h, pos_a = get_event_stats(event_id)
 
-    home_xg = val(
-        stats.get("Expected goals", {}).get("home") or
-        stats.get("xG", {}).get("home", 0)
-    )
+        home_score = event["homeScore"]["current"]
+        away_score = event["awayScore"]["current"]
 
-    away_xg = val(
-        stats.get("Expected goals", {}).get("away") or
-        stats.get("xG", {}).get("away", 0)
-    )
-
-    home_sot = val(stats.get("Shots on target", {}).get("home", 0))
-    away_sot = val(stats.get("Shots on target", {}).get("away", 0))
-
-    # fallback inteligente
-    if home_xg == 0 and home_sot > 0:
-        home_xg = home_sot * 0.30
-
-    if away_xg == 0 and away_sot > 0:
-        away_xg = away_sot * 0.30
-
-    home = {"xg": home_xg, "xga": away_xg, "sot": home_sot}
-    away = {"xg": away_xg, "xga": home_xg, "sot": away_sot}
-
-    return home, away
-
-# ------------------------------
-# STATS TIME
-# ------------------------------
-def get_team_recent_stats(team_id, limit=10):
-
-    if team_id in team_stats_cache:
-        return team_stats_cache[team_id]
-
-    url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/{limit}"
-    res = requests.get(url, headers=HEADERS)
-
-    if res.status_code != 200:
-        return None
-
-    events = res.json().get("events", [])
-
-    xg_total = 0
-    xga_total = 0
-    sot_total = 0
-    count = 0
-
-    for e in events:
-        if e.get("status", {}).get("type") != "finished":
-            continue
-
-        stats_raw = get_match_stats(e["id"])
-        if not stats_raw:
-            continue
-
-        extracted = extract_stats(stats_raw)
-        if not extracted:
-            continue
-
-        home, away = convert_stats(extracted)
-
-        if e["homeTeam"]["id"] == team_id:
-            xg_total += home["xg"]
-            xga_total += home["xga"]
-            sot_total += home["sot"]
+        if home_score > away_score:
+            result = 1
         else:
-            xg_total += away["xg"]
-            xga_total += away["xga"]
-            sot_total += away["sot"]
+            result = 0
 
-        count += 1
+        row = {
+            "xg_diff": xg_h - xg_a,
+            "shots_diff": shots_h - shots_a,
+            "possession_diff": pos_h - pos_a,
+            "home_adv": 1,
+            "result": result
+        }
 
-    if count < 3:
+        return row
+
+    except:
         return None
 
-    result = {
-        "xg": xg_total / count,
-        "xga": xga_total / count,
-        "sot": sot_total / count
-    }
 
-    team_stats_cache[team_id] = result
-    return result
+def train_model(df):
+    X = df.drop(columns=["result"])
+    y = df["result"]
 
-# ------------------------------
-# SCORE
-# ------------------------------
-def normalize(val, max_val):
-    return max(min(val / max_val, 1), -1)
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
 
-def calculate_score(home, away, weights):
+    model = RandomForestClassifier(n_estimators=200)
+    model.fit(X_scaled, y)
 
-    xg_diff = normalize(home["xg"] - away["xg"], 2.5)
-    sot_diff = normalize(home["sot"] - away["sot"], 8)
-    xga_diff = normalize(away["xga"] - home["xga"], 2.5)
+    importance = model.feature_importances_
+    features = X.columns
 
-    return (
-        xg_diff * weights["xg"] +
-        sot_diff * weights["sot"] +
-        xga_diff * weights["xga"]
-    )
+    ranking = sorted(zip(features, importance), key=lambda x: x[1], reverse=True)
 
-def classify(edge):
-    if edge >= 0.55:
-        return "ELITE"
-    elif edge >= 0.25:
-        return "BOA"
+    return model, scaler, ranking
+
+
+def predict_event(event, model, scaler):
+    xg_h, xg_a, shots_h, shots_a, pos_h, pos_a = get_event_stats(event["id"])
+
+    row = [[
+        xg_h - xg_a,
+        shots_h - shots_a,
+        pos_h - pos_a,
+        1
+    ]]
+
+    X = scaler.transform(row)
+    prob = model.predict_proba(X)[0][1]
+
+    if prob > 0.55:
+        winner = "HOME"
     else:
-        return "EVITAR"
+        winner = "AWAY"
 
-# ------------------------------
-# UI
-# ------------------------------
-st.set_page_config(page_title="Scanner V4 PRO", layout="wide")
+    edge = abs(prob - 0.5)
 
-st.title("🔥 Scanner V4 PRO - Picks do Dia")
+    return winner, edge
 
-selected_date = st.date_input("Selecione a data")
 
-if st.button("Buscar Jogos"):
+# -------------------------
+# STREAMLIT
+# -------------------------
 
-    # 🔥 pega hoje + ontem (corrige bug de madrugada)
-    matches_today = get_matches_by_date(selected_date)
-    matches_yesterday = get_matches_by_date(selected_date - timedelta(days=1))
+st.title("⚽ Scanner Inteligente por Liga (SofaScore)")
 
-    matches = matches_today + matches_yesterday
-    matches = filter_matches_by_date(matches, selected_date)
+selected_date = st.date_input("Escolha a data")
 
-    if not matches:
-        st.warning("Nenhum jogo encontrado.")
-        st.stop()
+date_str = selected_date.strftime("%Y-%m-%d")
 
-    results = []
+events = get_events_by_date(date_str)
 
-    for match in matches:
+filtered_events = []
 
-        league = match.get("tournament", {}).get("uniqueTournament", {}).get("name", "")
+for e in events:
+    league = e["tournament"]["name"]
+    if league in LEAGUES:
+        br_time = convert_to_br_time(e["startTimestamp"])
+        e["br_time"] = br_time
+        filtered_events.append(e)
 
-        home_name = match["homeTeam"]["name"]
-        away_name = match["awayTeam"]["name"]
+st.write(f"Jogos encontrados: {len(filtered_events)}")
 
-        weights = LEAGUE_WEIGHTS.get(league, DEFAULT_WEIGHTS)
+# -------------------------
+# TREINO (BACKTEST BASE)
+# -------------------------
 
-        home = get_team_recent_stats(match["homeTeam"]["id"])
-        away = get_team_recent_stats(match["awayTeam"]["id"])
+if st.button("Treinar modelo (últimos jogos)"):
+    rows = []
 
-        if not home or not away:
-            continue
+    for e in filtered_events:
+        if e["status"]["type"] == "finished":
+            r = prepare_row(e)
+            if r:
+                rows.append(r)
 
-        score = calculate_score(home, away, weights)
+    if len(rows) < 20:
+        st.warning("Poucos dados para treinar")
+    else:
+        df = pd.DataFrame(rows)
 
-        winner = home_name if score > 0 else away_name
+        model, scaler, ranking = train_model(df)
 
-        results.append({
-            "Liga": league,
-            "Jogo": f"{home_name} vs {away_name}",
-            "Pick": winner,
-            "Edge": round(score, 2),
-            "Classificação": classify(abs(score))
-        })
+        st.success("Modelo treinado!")
 
-    if not results:
-        st.warning("Nenhum jogo com dados suficientes.")
-        st.stop()
+        st.subheader("🔥 TOP VARIÁVEIS")
+        for f, imp in ranking[:5]:
+            st.write(f"{f} → {round(imp,3)}")
 
-    df = pd.DataFrame(results).sort_values(by="Edge", ascending=False)
+        st.session_state["model"] = model
+        st.session_state["scaler"] = scaler
 
-    st.dataframe(df, use_container_width=True)
+
+# -------------------------
+# PREDIÇÃO
+# -------------------------
+
+if "model" in st.session_state:
+
+    st.subheader("📊 Jogos do dia")
+
+    for e in filtered_events:
+
+        home = e["homeTeam"]["name"]
+        away = e["awayTeam"]["name"]
+        time = e["br_time"].strftime("%H:%M")
+
+        if e["status"]["type"] != "finished":
+
+            winner, edge = predict_event(
+                e,
+                st.session_state["model"],
+                st.session_state["scaler"]
+            )
+
+            if edge >= 0.20:
+                tag = "🔥 ELITE"
+            elif edge >= 0.10:
+                tag = "🟡 BOM"
+            else:
+                tag = "⚪ FRACO"
+
+            st.write(f"{time} | {home} vs {away}")
+            st.write(f"👉 {winner} | Edge: {round(edge,2)} | {tag}")
+            st.write("---")
