@@ -1,16 +1,14 @@
 import streamlit as st
 import requests
 import pandas as pd
+import os
+import pickle
 from datetime import datetime, timedelta
 import pytz
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
 BR_TZ = pytz.timezone("America/Sao_Paulo")
-
-# -------------------------
-# CONFIG
-# -------------------------
 
 LEAGUES = [
     "Brasileirão Betano","Brasileirão Série B","Premier League","Championship",
@@ -41,7 +39,6 @@ def get_stats(event_id):
     try:
         url = f"https://api.sofascore.com/api/v1/event/{event_id}/statistics"
         data = requests.get(url).json()
-
         stats = data["statistics"][0]["groups"]
 
         def find(name):
@@ -51,24 +48,38 @@ def get_stats(event_id):
                         return s["home"], s["away"]
             return 0, 0
 
-        xg = find("Expected goals")
-        shots = find("Total shots")
-        poss = find("Ball possession")
-
-        return xg, shots, poss
+        return find("Expected goals"), find("Total shots"), find("Ball possession")
 
     except:
         return (0,0),(0,0),(0,0)
 
+# -------------------------
+# CACHE PATHS
+# -------------------------
+
+def safe_name(league):
+    return league.replace(" ", "_").replace(",", "")
+
+def get_paths(league):
+    name = safe_name(league)
+    return f"data/{name}.csv", f"models/{name}.pkl"
 
 # -------------------------
-# HISTÓRICO POR LIGA
+# HISTÓRICO (COM CACHE)
 # -------------------------
 
-def get_league_history(league, days=180):
-    events_all = []
+def load_or_create_dataset(league):
 
-    for i in range(days):
+    data_path, model_path = get_paths(league)
+
+    if os.path.exists(data_path):
+        return pd.read_csv(data_path)
+
+    st.write(f"⬇️ Baixando histórico: {league}")
+
+    rows = []
+
+    for i in range(120):
         d = datetime.now() - timedelta(days=i)
         date_str = d.strftime("%Y-%m-%d")
 
@@ -80,45 +91,43 @@ def get_league_history(league, days=180):
                     e["tournament"]["name"] == league and
                     e["status"]["type"] == "finished"
                 ):
-                    events_all.append(e)
+                    (xg_h,xg_a),(s_h,s_a),(p_h,p_a) = get_stats(e["id"])
+
+                    result = 1 if e["homeScore"]["current"] > e["awayScore"]["current"] else 0
+
+                    rows.append({
+                        "xg_diff": xg_h - xg_a,
+                        "shots_diff": s_h - s_a,
+                        "pos_diff": p_h - p_a,
+                        "home_adv": 1,
+                        "result": result
+                    })
 
         except:
             continue
 
-    return events_all
+    df = pd.DataFrame(rows)
+    df.to_csv(data_path, index=False)
 
-
-# -------------------------
-# DATASET
-# -------------------------
-
-def build_dataset(events):
-    rows = []
-
-    for e in events:
-        try:
-            (xg_h,xg_a),(s_h,s_a),(p_h,p_a) = get_stats(e["id"])
-
-            res = 1 if e["homeScore"]["current"] > e["awayScore"]["current"] else 0
-
-            rows.append({
-                "xg_diff": xg_h - xg_a,
-                "shots_diff": s_h - s_a,
-                "pos_diff": p_h - p_a,
-                "home_adv": 1,
-                "result": res
-            })
-        except:
-            continue
-
-    return pd.DataFrame(rows)
-
+    return df
 
 # -------------------------
-# TREINO
+# MODELO (COM CACHE)
 # -------------------------
 
-def train(df):
+def load_or_train_model(league):
+
+    data_path, model_path = get_paths(league)
+
+    if os.path.exists(model_path):
+        with open(model_path, "rb") as f:
+            return pickle.load(f)
+
+    df = load_or_create_dataset(league)
+
+    if len(df) < 50:
+        return None
+
     X = df.drop(columns=["result"])
     y = df["result"]
 
@@ -131,8 +140,10 @@ def train(df):
     importance = model.feature_importances_
     ranking = sorted(zip(X.columns, importance), key=lambda x: x[1], reverse=True)
 
-    return model, scaler, ranking
+    with open(model_path, "wb") as f:
+        pickle.dump((model, scaler, ranking), f)
 
+    return model, scaler, ranking
 
 # -------------------------
 # PREDIÇÃO
@@ -149,54 +160,33 @@ def predict(e, model, scaler):
 
     return winner, edge
 
-
 # -------------------------
 # UI
 # -------------------------
 
-st.title("⚽ Modelo Profissional por Liga (Auto Learning)")
+st.title("⚽ Modelo Profissional (Rápido + Cache)")
 
 date = st.date_input("Escolha a data")
 date_str = date.strftime("%Y-%m-%d")
 
 events = get_events(date_str)
-
 events = [e for e in events if e["tournament"]["name"] in LEAGUES]
 
 st.write(f"Jogos encontrados: {len(events)}")
 
-# -------------------------
-# PROCESSAR
-# -------------------------
-
 if st.button("Analisar Jogos"):
-
-    league_models = {}
 
     for e in events:
 
         league = e["tournament"]["name"]
 
-        st.write(f"📊 Treinando liga: {league}")
+        model_data = load_or_train_model(league)
 
-        if league not in league_models:
+        if not model_data:
+            st.warning(f"{league} sem dados suficientes")
+            continue
 
-            hist = get_league_history(league, 120)
-
-            if len(hist) < 30:
-                st.warning(f"{league} sem dados suficientes")
-                continue
-
-            df = build_dataset(hist)
-
-            if len(df) < 30:
-                continue
-
-            model, scaler, ranking = train(df)
-
-            league_models[league] = (model, scaler, ranking)
-
-        model, scaler, ranking = league_models[league]
+        model, scaler, ranking = model_data
 
         winner, edge = predict(e, model, scaler)
 
@@ -216,7 +206,7 @@ if st.button("Analisar Jogos"):
         st.write(f"{br_time} | {home} vs {away}")
         st.write(f"👉 {winner} | Edge: {round(edge,2)} | {tag}")
 
-        st.write("Top 3 liga:")
+        st.write("Top 3 da liga:")
         for f,_ in ranking[:3]:
             st.write(f"- {f}")
 
