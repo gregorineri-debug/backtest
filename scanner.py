@@ -8,6 +8,15 @@ import pytz
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
+# -------------------------
+# CRIAR PASTAS (FIX ERRO)
+# -------------------------
+os.makedirs("data", exist_ok=True)
+os.makedirs("models", exist_ok=True)
+
+# -------------------------
+# CONFIG
+# -------------------------
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 
 LEAGUES = [
@@ -27,7 +36,7 @@ LEAGUES = [
 ]
 
 # -------------------------
-# SOFASCORE
+# SOFASCORE API
 # -------------------------
 
 def get_events(date):
@@ -54,7 +63,7 @@ def get_stats(event_id):
         return (0,0),(0,0),(0,0)
 
 # -------------------------
-# CACHE PATHS
+# PATHS
 # -------------------------
 
 def safe_name(league):
@@ -65,12 +74,12 @@ def get_paths(league):
     return f"data/{name}.csv", f"models/{name}.pkl"
 
 # -------------------------
-# HISTÓRICO (COM CACHE)
+# DATASET (CACHE)
 # -------------------------
 
 def load_or_create_dataset(league):
 
-    data_path, model_path = get_paths(league)
+    data_path, _ = get_paths(league)
 
     if os.path.exists(data_path):
         return pd.read_csv(data_path)
@@ -112,7 +121,7 @@ def load_or_create_dataset(league):
     return df
 
 # -------------------------
-# MODELO (COM CACHE)
+# MODELO (CACHE)
 # -------------------------
 
 def load_or_train_model(league):
@@ -161,10 +170,10 @@ def predict(e, model, scaler):
     return winner, edge
 
 # -------------------------
-# UI
+# INTERFACE
 # -------------------------
 
-st.title("⚽ Modelo Profissional (Rápido + Cache)")
+st.title("⚽ Modelo Profissional (Rápido + Cache + Por Liga)")
 
 date = st.date_input("Escolha a data")
 date_str = date.strftime("%Y-%m-%d")
@@ -173,6 +182,10 @@ events = get_events(date_str)
 events = [e for e in events if e["tournament"]["name"] in LEAGUES]
 
 st.write(f"Jogos encontrados: {len(events)}")
+
+# -------------------------
+# EXECUÇÃO
+# -------------------------
 
 if st.button("Analisar Jogos"):
 
