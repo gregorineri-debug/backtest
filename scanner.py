@@ -8,6 +8,7 @@ import pytz
 # -------------------------
 BR_TZ = pytz.timezone("America/Sao_Paulo")
 
+# 🔥 LISTA PRINCIPAL (EXATA)
 VALID_LEAGUES = [
     "Brasileirão Betano","Brasileirão Série B",
     "Premier League","Championship",
@@ -22,7 +23,7 @@ VALID_LEAGUES = [
     "Parva Liga",
     "Czech First League",
     "Liga de Primera",
-    "Primera A",
+    "Primera A, Apertura","Primera A, Finalización",
     "HNL",
     "Danish Superliga",
     "Egyptian Premier League",
@@ -32,18 +33,27 @@ VALID_LEAGUES = [
     "VriendenLoterij Eredivisie","Eerste Divisie",
     "Premier Division",
     "Botola Pro",
-    "Liga MX",
+    "Liga MX, Apertura","Liga MX, Clausura",
     "Eliteserien",
-    "Primera División",
+    "Primera División, Apertura","Primera División, Clausura",
     "Liga 1",
     "Ekstraklasa",
-    "Liga Portugal",
+    "Liga Portugal Betclic","Liga Portugal 2",
     "Romanian SuperLiga",
     "Allsvenskan",
     "Swiss Super League",
-    "Super Lig",
+    "Trendyoll Super Lig",
     "Liga AUF Uruguaya"
 ]
+
+# 🔥 CORREÇÕES PONTUAIS (APENAS ONDE PRECISA)
+LEAGUE_ALIASES = {
+    "2. bundesliga": "2. Bundesliga",
+    "serie b italy": "Serie B",
+    "liga portugal": "Liga Portugal Betclic",
+    "liga mx": "Liga MX, Apertura",
+    "primera división": "Primera División, Apertura"
+}
 
 LEAGUE_MODEL = {
     "Brasileirão Betano": ["form", "home_strength", "xg"],
@@ -65,20 +75,24 @@ def get_events(date):
 # FILTROS
 # -------------------------
 
+def normalize_league(name):
+    name_lower = name.lower()
+
+    for key in LEAGUE_ALIASES:
+        if key in name_lower:
+            return LEAGUE_ALIASES[key]
+
+    return name
+
+def is_valid_league(name):
+    name = normalize_league(name)
+    return name in VALID_LEAGUES
+
+
 def is_same_day_br(event, selected_date):
     utc = datetime.utcfromtimestamp(event["startTimestamp"]).replace(tzinfo=pytz.utc)
     br_time = utc.astimezone(BR_TZ)
     return br_time.date() == selected_date
-
-
-def is_valid_league(league_name):
-    league_name = league_name.lower()
-
-    for valid in VALID_LEAGUES:
-        if valid.lower() in league_name:
-            return True
-
-    return False
 
 # -------------------------
 # STATS
@@ -86,8 +100,7 @@ def is_valid_league(league_name):
 
 def get_team_last_matches(team_id):
     url = f"https://api.sofascore.com/api/v1/team/{team_id}/events/last/5"
-    data = requests.get(url).json()
-    return data.get("events", [])
+    return requests.get(url).json().get("events", [])
 
 
 def get_event_stats(event_id):
@@ -104,7 +117,6 @@ def get_event_stats(event_id):
             return 0, 0
 
         return find("Expected goals"), find("Total shots")
-
     except:
         return (0,0),(0,0)
 
@@ -113,44 +125,34 @@ def get_event_stats(event_id):
 # -------------------------
 
 def calculate_form(team_id):
-
     matches = get_team_last_matches(team_id)
-
-    if not matches:
-        return 0.5
 
     points = 0
     total = 0
 
     for m in matches:
         try:
-            home_id = m["homeTeam"]["id"]
             hs = m["homeScore"]["current"]
             as_ = m["awayScore"]["current"]
 
-            if team_id == home_id:
-                if hs > as_:
-                    points += 3
-                elif hs == as_:
-                    points += 1
+            if m["homeTeam"]["id"] == team_id:
+                if hs > as_: points += 3
+                elif hs == as_: points += 1
             else:
-                if as_ > hs:
-                    points += 3
-                elif hs == as_:
-                    points += 1
+                if as_ > hs: points += 3
+                elif hs == as_: points += 1
 
             total += 3
         except:
             continue
 
-    return points / total if total > 0 else 0.5
+    return points / total if total else 0.5
 
 # -------------------------
 # MÉDIAS
 # -------------------------
 
 def calculate_averages(team_id):
-
     matches = get_team_last_matches(team_id)
 
     xg_total = 0
@@ -182,68 +184,53 @@ def calculate_averages(team_id):
 # -------------------------
 
 def calculate_score(home_id, away_id, league):
-
     criteria = LEAGUE_MODEL.get(league, LEAGUE_MODEL["default"])
 
-    home_form = calculate_form(home_id)
-    away_form = calculate_form(away_id)
+    hf = calculate_form(home_id)
+    af = calculate_form(away_id)
 
-    home_xg, home_shots = calculate_averages(home_id)
-    away_xg, away_shots = calculate_averages(away_id)
+    hxg, hs = calculate_averages(home_id)
+    axg, as_ = calculate_averages(away_id)
 
-    home_score = 0
-    away_score = 0
+    home = 0
+    away = 0
 
     for c in criteria:
-
         if c == "form":
-            home_score += home_form
-            away_score += away_form
-
+            home += hf; away += af
         elif c == "xg":
-            home_score += home_xg
-            away_score += away_xg
-
+            home += hxg; away += axg
         elif c == "shots":
-            home_score += home_shots * 0.05
-            away_score += away_shots * 0.05
-
+            home += hs*0.05; away += as_*0.05
         elif c == "home_strength":
-            home_score += 0.3
+            home += 0.3
 
-    return home_score, away_score
+    return home, away
 
 # -------------------------
 # PREDIÇÃO
 # -------------------------
 
-def predict(event):
+def predict(e):
+    league = normalize_league(e["tournament"]["name"])
+    home_id = e["homeTeam"]["id"]
+    away_id = e["awayTeam"]["id"]
 
-    league = event["tournament"]["name"]
+    h,a = calculate_score(home_id, away_id, league)
+    diff = h - a
 
-    home_id = event["homeTeam"]["id"]
-    away_id = event["awayTeam"]["id"]
-
-    home_score, away_score = calculate_score(home_id, away_id, league)
-
-    diff = home_score - away_score
-
-    winner = "HOME" if diff > 0 else "AWAY"
-    edge = abs(diff)
-
-    return winner, edge
+    return ("HOME" if diff > 0 else "AWAY"), abs(diff)
 
 # -------------------------
 # UI
 # -------------------------
 
-st.title("⚽ Scanner Profissional (Filtrado + Brasil)")
+st.title("⚽ Scanner Ajustado (Preciso)")
 
 date = st.date_input("Escolha a data")
 
 events = get_events(date.strftime("%Y-%m-%d"))
 
-# 🔥 FILTRO FINAL
 filtered_events = [
     e for e in events
     if is_valid_league(e["tournament"]["name"])
@@ -252,42 +239,27 @@ filtered_events = [
 
 st.write(f"Jogos válidos: {len(filtered_events)}")
 
-# 🔍 DEBUG (opcional)
-with st.expander("Ver ligas encontradas (debug)"):
-    leagues_today = list(set([e["tournament"]["name"] for e in events]))
-    for l in leagues_today:
-        st.write(l)
-
 # -------------------------
 # EXECUÇÃO
 # -------------------------
 
 if st.button("Analisar Jogos"):
 
-    count = 0
-
     for e in filtered_events:
 
         winner, edge = predict(e)
 
-        # 🔥 FILTRO ELITE + BOM
         if edge < 0.5:
             continue
-
-        home = e["homeTeam"]["name"]
-        away = e["awayTeam"]["name"]
-        league = e["tournament"]["name"]
 
         utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=pytz.utc)
         br_time = utc.astimezone(BR_TZ).strftime("%H:%M")
 
+        home = e["homeTeam"]["name"]
+        away = e["awayTeam"]["name"]
+
         tag = "🔥 ELITE" if edge >= 1.0 else "🟡 BOM"
 
-        st.write(f"{br_time} | {league}")
-        st.write(f"{home} vs {away}")
-        st.write(f"👉 {winner} | Edge: {round(edge,2)} | {tag}")
+        st.write(f"{br_time} | {home} vs {away}")
+        st.write(f"{winner} | {round(edge,2)} | {tag}")
         st.write("---")
-
-        count += 1
-
-    st.write(f"Total de picks relevantes: {count}")
