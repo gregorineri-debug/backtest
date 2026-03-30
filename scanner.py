@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 from datetime import datetime
 import pytz
+import pandas as pd
 
 # -------------------------
 # CONFIG
@@ -50,11 +51,10 @@ def get_event_stats(event_id):
         return (0,0),(0,0)
 
 # -------------------------
-# FORMA REAL
+# FORMA
 # -------------------------
 
 def calculate_form(team_id):
-
     matches = get_team_last_matches(team_id)
 
     if not matches:
@@ -66,22 +66,21 @@ def calculate_form(team_id):
     for m in matches:
         try:
             home_id = m["homeTeam"]["id"]
-            home_score = m["homeScore"]["current"]
-            away_score = m["awayScore"]["current"]
+            hs = m["homeScore"]["current"]
+            as_ = m["awayScore"]["current"]
 
             if team_id == home_id:
-                if home_score > away_score:
+                if hs > as_:
                     points += 3
-                elif home_score == away_score:
+                elif hs == as_:
                     points += 1
             else:
-                if away_score > home_score:
+                if as_ > hs:
                     points += 3
-                elif home_score == away_score:
+                elif hs == as_:
                     points += 1
 
             total += 3
-
         except:
             continue
 
@@ -111,7 +110,6 @@ def calculate_averages(team_id):
                 shots_total += s_a
 
             count += 1
-
         except:
             continue
 
@@ -180,12 +178,12 @@ def predict(event):
 # UI
 # -------------------------
 
-st.title("⚽ Modelo Profissional com Forma Real")
+st.title("⚽ Modelo Profissional com Forma Real (Tabela)")
 
 date = st.date_input("Escolha a data")
 date_str = date.strftime("%Y-%m-%d")
 
-events = get_events(date)
+events = get_events(date_str)
 
 st.write(f"Jogos encontrados: {len(events)}")
 
@@ -195,25 +193,43 @@ st.write(f"Jogos encontrados: {len(events)}")
 
 if st.button("Analisar Jogos"):
 
+    results = []
+
     for e in events:
 
-        league = e["tournament"]["name"]
+        try:
+            league = e["tournament"]["name"]
 
-        winner, edge = predict(e)
+            winner, edge = predict(e)
 
-        home = e["homeTeam"]["name"]
-        away = e["awayTeam"]["name"]
+            home = e["homeTeam"]["name"]
+            away = e["awayTeam"]["name"]
 
-        utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=pytz.utc)
-        br_time = utc.astimezone(BR_TZ).strftime("%H:%M")
+            utc = datetime.utcfromtimestamp(e["startTimestamp"]).replace(tzinfo=pytz.utc)
+            br_time = utc.astimezone(BR_TZ).strftime("%H:%M")
 
-        if edge >= 1.0:
-            tag = "🔥 ELITE"
-        elif edge >= 0.5:
-            tag = "🟡 BOM"
-        else:
-            tag = "⚪ FRACO"
+            if edge >= 1.0:
+                tag = "ELITE"
+            elif edge >= 0.5:
+                tag = "BOM"
+            else:
+                tag = "FRACO"
 
-        st.write(f"{br_time} | {home} vs {away}")
-        st.write(f"👉 {winner} | Edge: {round(edge,2)} | {tag}")
-        st.write("---")
+            results.append({
+                "Hora": br_time,
+                "Liga": league,
+                "Jogo": f"{home} vs {away}",
+                "Pick": winner,
+                "Edge": round(edge, 2),
+                "Classificação": tag
+            })
+
+        except:
+            continue
+
+    df = pd.DataFrame(results)
+
+    # Ordena pelos melhores
+    df = df.sort_values(by="Edge", ascending=False)
+
+    st.dataframe(df, use_container_width=True)
