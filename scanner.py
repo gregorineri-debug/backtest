@@ -246,27 +246,30 @@ def analyze_goals(row):
     liga = row["Liga"]
     profile = league_profile(liga)
 
-    score = 45 + profile["goals"] * 8
+    score = 35 + profile["goals"] * 6
     pick = "Over 1.5 gols"
 
-    if profile["goals"] >= 4:
+    if profile["goals"] >= 5:
         pick = "Over 2.5 gols"
-        score += 8
+        score += 10
+    elif profile["goals"] >= 4:
+        pick = "Over 1.5 gols"
+        score += 5
 
     if contains_any(jogo, DEFENSIVE_TEAMS):
         pick = "Under 2.5 gols"
-        score += 8
+        score -= 10
 
-    if contains_any(jogo, ["Al-Hilal", "PSG", "Bayern", "Roda", "Waalwijk", "Manchester City", "Liverpool"]):
+    if contains_any(jogo, ["Al-Hilal", "PSG", "Bayern", "Manchester City", "Liverpool"]):
         pick = "Over 2.5 gols"
-        score += 12
+        score += 10
 
     if "egypt" in liga.lower() or "portugal 2" in liga.lower() or "primera nacional" in liga.lower():
         pick = "Under 2.5 gols"
-        score += 5
+        score -= 8
 
     mom = momentum_score(row)
-    score = int((score * 0.80) + (mom * 0.20))
+    score = int((score * 0.90) + (mom * 0.10))
 
     return build_result(row, pick, score, mom)
 
