@@ -244,59 +244,65 @@ def analyze_winner(row):
 def analyze_goals(row):
     jogo = row["Jogo"]
     liga = row["Liga"]
+    casa = row["Casa"]
+    fora = row["Fora"]
+
     profile = league_profile(liga)
 
-    score = 45 + profile["goals"] * 8
+    # SCORE BASE MAIS BAIXO
+    score = 38 + profile["goals"] * 5
+
+    # PICK PADRÃO MAIS NEUTRO
     pick = "Over 1.5 gols"
 
-    if profile["goals"] >= 4:
-        pick = "Over 2.5 gols"
-        score += 8
-
-    if contains_any(jogo, DEFENSIVE_TEAMS):
-        pick = "Under 2.5 gols"
-        score += 8
-
-    if contains_any(jogo, ["Al-Hilal", "PSG", "Bayern", "Roda", "Waalwijk", "Manchester City", "Liverpool"]):
+    # LIGAS MUITO OVER
+    if profile["goals"] >= 5:
         pick = "Over 2.5 gols"
         score += 12
 
-    if "egypt" in liga.lower() or "portugal 2" in liga.lower() or "primera nacional" in liga.lower():
-        pick = "Under 2.5 gols"
-        score += 5
+    elif profile["goals"] >= 4:
+        pick = "Over 1.5 gols"
+        score += 6
 
-    mom = momentum_score(row)
-    score = int((score * 0.80) + (mom * 0.20))
+    # TIMES MUITO OFENSIVOS
+    if contains_any(jogo, [
+        "Al-Hilal",
+        "PSG",
+        "Paris Saint-Germain",
+        "Bayern",
+        "Manchester City",
+        "Liverpool",
+        "Arsenal",
+        "Real Madrid"
+    ]):
+        score += 10
 
-    return build_result(row, pick, score, mom)
-
-
-def analyze_corners(row):
-    jogo = row["Jogo"]
-    liga = row["Liga"]
-    profile = league_profile(liga)
-
-    score = 42 + profile["corners"] * 8
-    pick = "Over 8.5 escanteios"
-
-    if profile["corners"] >= 4:
-        pick = "Over 9.5 escanteios"
+    # CONFRONTO ENTRE DOIS TIMES FORTES
+    if contains_any(casa, STRONG_TEAMS) and contains_any(fora, STRONG_TEAMS):
         score += 8
 
-    if contains_any(jogo, HIGH_CORNERS_TEAMS):
-        pick = "Over 8.5 escanteios"
-        score += 15
-
+    # TIMES DEFENSIVOS
     if contains_any(jogo, DEFENSIVE_TEAMS):
-        pick = "Under 10.5 escanteios"
-        score += 4
-
-    if "egypt" in liga.lower() or "primera nacional" in liga.lower():
-        pick = "Evitar escanteios"
+        pick = "Under 2.5 gols"
         score -= 12
 
+    # LIGAS UNDER
+    if (
+        "egypt" in liga.lower()
+        or "portugal 2" in liga.lower()
+        or "primera nacional" in liga.lower()
+        or "serie b" in liga.lower()
+    ):
+        pick = "Under 2.5 gols"
+        score -= 10
+
+    # MOMENTUM COM MENOR PESO
     mom = momentum_score(row)
-    score = int((score * 0.80) + (mom * 0.20))
+
+    score = int((score * 0.90) + (mom * 0.10))
+
+    # LIMITADOR PARA NÃO EXPLODIR SCORE
+    score = max(25, min(95, score))
 
     return build_result(row, pick, score, mom)
 
